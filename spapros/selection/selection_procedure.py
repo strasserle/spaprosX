@@ -81,6 +81,11 @@ class ProbesetSelector:  # (object)
             genes can be subsetted for selection via :attr:`genes_key`.
         celltype_key:
             Key in ``adata.obs`` with celltype annotations.
+        batch_key:
+            Key in ``adata.obs`` with batch annotations. Only necessary if ``batch_aware=True``.
+        batch_aware:
+            If `True`, use batch aware methods for gene selection. If ``adata.obs[batch_key]`` does not exists,
+            falling back to ``batch_aware=False``.
         genes_key:
             Key in ``adata.var`` for preselected genes (typically 'highly_variable_genes').
         n:
@@ -177,6 +182,11 @@ class ProbesetSelector:  # (object)
             Data with log normalised counts in ``adata.X``.
         ct_key:
             Key in ``adata.obs`` with celltype annotations.
+                batch_key:
+            Key in ``adata.obs`` with batch annotations. Only necessary if ``batch_aware=True``.
+        batch_aware:
+            If `True`, use batch aware methods for gene selection. If ``adata.obs[batch_key]`` does not exists,
+            falling back to ``batch_aware=False``.
         g_key:
             Key in ``adata.var`` for preselected genes (typically `'highly_variable_genes'`).
         n:
@@ -321,6 +331,8 @@ class ProbesetSelector:  # (object)
         self,
         adata: sc.AnnData,
         celltype_key: str,
+        batch_key: str = "batch",
+        batch_aware: bool = True,
         genes_key: str = "highly_variable",
         n: Optional[int] = None,
         preselected_genes: List[str] = [],
@@ -492,6 +504,14 @@ class ProbesetSelector:  # (object)
         # self.disable_pbars = self.verbosity < 1
         self.progress = util.NestedProgress()  # redirect_stdout=False
 
+        # batch awareness
+        if batch_aware and batch_key is not None and batch_key in adata.obs:
+            self.batch_key = batch_key
+            self.batch_aware = batch_aware
+        else:
+            self.batch_key = None
+            self.batch_aware = False
+
     def select_probeset(self) -> None:
         """Run full selection procedure.
 
@@ -588,6 +608,8 @@ class ProbesetSelector:  # (object)
                 self.adata[:, self.genes],
                 obs_key=self.ct_key,
                 **self.DE_selection_hparams,
+                batch_key=self.batch_key,
+                batch_aware=self.batch_aware,
                 penalty_keys=self.DE_penalties,
                 groups=self.celltypes,
                 reference="rest",
@@ -657,6 +679,8 @@ class ProbesetSelector:  # (object)
                 self.adata[:, self.genes],
                 self.forest_results["DE_prior_forest"],
                 ct_key=self.ct_key,
+                batch_key=self.batch_key,
+                batch_aware=self.batch_aware,
                 penalty_keys=self.DE_penalties,
                 tree_clf_kwargs=self.forest_hparams,
                 verbosity=self.verbosity,
@@ -2065,7 +2089,7 @@ def select_reference_probesets(
     adata: sc.AnnData,
     n: int,
     genes_key: str = "highly_variable",
-    methods: Union[List[str], Dict[str, Dict]] = ["PCA", "DE", "HVG", "random"],
+    methods: Union[List[str], Dict[str, Dict]] = ["PCA", "DE", "DEX", "HVG", "random"],
     seeds: List[int] = [0],
     verbosity: int = 2,
     save_dir: Union[str, None] = None,
@@ -2085,6 +2109,7 @@ def select_reference_probesets(
 
                 {
                     'DE':{},
+                    'DEX': {}
                     'PCA':{'n_pcs':30},
                     'HVG':{},
                     'random':{},
@@ -2107,6 +2132,7 @@ def select_reference_probesets(
     selection_fcts: Dict[str, Callable] = {
         "PCA": select.select_pca_genes,
         "DE": select.select_DE_genes,
+        "DEX": select.select_DE_genes,
         "random": select.random_selection,
         "HVG": select.select_highly_variable_features,
     }
@@ -2122,6 +2148,19 @@ def select_reference_probesets(
             print(f"Method {method} is not available. Supported methods are {[key for key in selection_fcts]}.")
             # del methods[method]
     methods = {m: methods[m] for m in methods if m in selection_fcts}
+    if "DE" in methods:
+        methods["DE"]["batch_aware"] = False
+    if "DEX" in methods:
+        if "batch_key" in methods["DEX"]:
+            batch_key = methods["DEX"]["batch_key"]
+        else:
+            batch_key = "batch"
+        if batch_key in adata.obs:
+            methods["DEX"]["batch_aware"] = True
+            methods["DEX"]["batch_key"] = batch_key
+        else:
+            print(f"Skipping DEX reference selection because {batch_key} not in adata.obs.")
+            del methods["DEX"]
 
     # Create list of planed selections
     selections: List[dict] = []
