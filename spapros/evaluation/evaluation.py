@@ -159,23 +159,31 @@ class ProbesetEvaluator:
         adata:
             An already preprocessed annotated data matrix. Typically we use log normalised data.
         celltype_key:
-            The adata.obs key for cell type annotations. Provide a list of keys to calculate the according metrics on
-            multiple keys.
+            The ``adata.obs`` key for cell type annotations. Provide a list of keys to calculate the according
+            metrics on multiple keys.
+        batch_key:
+            The ``adata.obs`` key for batch annotations. Provide a list of keys to calculate the batch aware metrics
+            once on every key. Note that parameters for every metric - batch key pair can be specified in
+            :attr:`metrics_params` with a key of the form `'<metric>_X_<batch_key>'`.
         results_dir:
             Directory where probeset results are saved. Defaults to `./probeset_evaluation/`. Set to `None` if you don't
             want to save results. When initializing the class we also check for existing results.
-            Note if
         scheme:
             Defines which metrics are calculated
 
                 - `'quick'` : knn, forest classification, marker correlation (if marker list given), gene correlation
-                - `'full'` : nmi, knn, forest classification, marker correlation (if marker list given), gene correlation
+                - `'full'` : nmi, knn, stratified knn, forest classification, marker correlation (if marker list given),
+                gene correlation
+                - `'batch_aware` : stratified knn
                 - `'custom'`: define metrics of intereset in :attr:`metrics`
 
-        metrics: Define which metrics are calculated. This is set automatically if :attr:`scheme != "custom"`. Supported are:
+        metrics:
+            Define which metrics are calculated. This is set automatically if :attr:`scheme != "custom"`. Supported
+            are:
 
             - `'cluster_similarity'`
             - `'knn_overlap'`
+            - `'knn_overlap_X_{batch_key}'`
             - `'forest_clfs'`
             - `'marker_corr'`
             - `'gene_corr'`
@@ -209,6 +217,8 @@ class ProbesetEvaluator:
             An already preprocessed annotated data matrix. Typically we use log normalised data.
         celltype_key:
             The ``adata.obs`` key for cell type annotations or list of keys.
+        batch_keys:
+            The ``adata.obs`` keys for batch annotation.
         dir:
             Directory where probeset results are saved.
         scheme:
@@ -247,6 +257,7 @@ class ProbesetEvaluator:
         self,
         adata: sc.AnnData,
         celltype_key: Union[str, List[str]] = "celltype",
+        batch_key: Union[str, List[str]] = "batch",
         results_dir: Union[str, None] = "./probeset_evaluation/",
         scheme: str = "quick",
         metrics: Optional[List[str]] = None,
@@ -260,6 +271,7 @@ class ProbesetEvaluator:
 
         self.adata = adata
         self.celltype_key = celltype_key
+        self.batch_keys = self._check_batch_key(batch_key)
         self.dir: Union[str, None] = results_dir
         self.scheme = scheme
         self.marker_list = marker_list
@@ -596,6 +608,7 @@ class ProbesetEvaluator:
                 User specified parameters for the calculation of the metrics.
         """
         params = get_metric_default_parameters()
+        params = self._stratify_default_parameters(params)
         for metric in params:
             if metric in new_params:
                 for param in params[metric]:
@@ -607,15 +620,55 @@ class ProbesetEvaluator:
             params["forest_clfs"]["ct_key"] = self.celltype_key
         return params
 
+
+    def _stratify_default_parameters(self, old_params):
+        """
+
+        Args:
+            old_params:
+                Default parameters for the calculation of the metrics. Contains only one key per metric.
+
+        Returns:
+            Dictionary with one key per batch key per metric.
+
+        """
+        new_params = {}
+        for metric in old_params:
+            # all bath aware metrics are given a name ending on _X
+            if metric.endswith("_X"):
+                # self.batch_keys in adata.obs already checked in init
+                for batch_key in self.batch_keys:
+                    new_params[metric+"_"+batch_key] = old_params[metric].copy()
+                    new_params[metric+"_"+batch_key]["batch_key"] = batch_key
+            # non-batch aware metrics are simply copied
+            else:
+                new_params[metric] = old_params[metric]
+
+        return new_params
+
+
     def _get_metrics_of_scheme(
         self,
     ) -> List[str]:
         """Get the metrics according to the chosen scheme."""
 
+        if self.scheme == "batch_aware" or self.scheme == "full":
+            # add batch aware metrics if scheme not quick and batch key in adata.obs
+            batch_aware_metrics = ["knn_overlap_X"]
+            batch_aware_metrics_stratified = list(self._stratify_default_parameters({b: {} for b in
+                                                                                  batch_aware_metrics}).keys())
+
+        if self.scheme == "batch_aware":
+            metrics = batch_aware_metrics_stratified
+            # if no batch key was found, fall back to scheme quick
+            if len(metrics) == 0:
+                self.scheme = "quick"
+
         if self.scheme == "quick":
             metrics = ["knn_overlap", "forest_clfs", "gene_corr"]
-        elif self.scheme == "full":
-            metrics = ["cluster_similarity", "knn_overlap", "forest_clfs", "gene_corr"]
+        if self.scheme == "full":
+            metrics = ["cluster_similarity", "knn_overlap", "forest_clfs", "gene_corr"] + batch_aware_metrics_stratified
+
 
         # Add marker correlation metric if a marker list is provided
         if ("marker_corr" in self.metrics_params) and ("marker_list" in self.metrics_params["marker_corr"]):
@@ -623,6 +676,7 @@ class ProbesetEvaluator:
                 metrics.append("marker_corr")
 
         return metrics
+
 
     def _init_summary_table(self, set_ids: List[str]) -> pd.DataFrame:
         """Initialize or load table with summary results.
@@ -829,8 +883,8 @@ class ProbesetEvaluator:
                 tmp_summary = pd.read_csv(tmp_summary_file, index_col=0)
                 set_ids_tmp = tmp_summary.index.to_list()
                 columns_subset = []
-                for metric in get_metric_names():
-                    if (metric in self.metrics) and np.any([metric in col for col in tmp_summary.columns]):
+                for metric in self.metrics:
+                    if np.any([metric in col for col in tmp_summary.columns]):
                         columns_subset += [col for col in tmp_summary.columns if metric in col]
                         for set_id in set_ids_tmp:
                             results_found.append([dir, metric, step, set_id])
@@ -906,6 +960,31 @@ class ProbesetEvaluator:
                 df_bool.loc[f"{row['metric']}_summary", row["set_id"]] = True
 
         return df_bool
+
+    def _check_batch_key(self, batch_key: Union[str, List[str]]):
+        """Collect existing batch keys in list.
+
+        Args:
+            batch_key:
+                Key in ``adata.obs`` or list of keys
+
+        Returns:
+            Curated list of batch keys.
+
+        """
+        if isinstance(batch_key, str):
+            batch_keys = [batch_key]
+        else:
+            assert isinstance(batch_key, list)
+            batch_keys = batch_key
+        checked_batch_keys = []
+        for bk in batch_keys:
+            if bk in self.adata.obs:
+                checked_batch_keys.append(bk)
+            else:
+                warnings.warn(f"{bk} not considered because it was not found in adata.obs")
+
+        return checked_batch_keys
 
     ############################
     ##    EVALUATION PLOTS    ##

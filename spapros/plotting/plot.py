@@ -713,6 +713,7 @@ def summary_table(
     default_order = [
         "cluster_similarity",
         "knn_overlap",
+        "knn_overlap_X",
         "Greens",
         "forest_clfs",
         "marker_corr",

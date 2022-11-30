@@ -45,45 +45,45 @@ from matplotlib.testing.compare import compare_images
             "background_key": "all"
         }, "marker_w_bg_all"),
 
-        # # plot_coexpression -> correlation_matrix
-        # ("plot_coexpression", {
-        #     "selections": None,
-        #     "n_cols": 3,
-        #     "scale": True
-        # }, "n_cols_3_scaled"),
-        # ("plot_coexpression", {
-        #     "selections": None,
-        #     "n_cols": 1,
-        #     "scale": False
-        # }, "n_cols_1_unscaled"),
-        # ("plot_coexpression", {
-        #     "selections": ["marker"],
-        #     "colorbar": False
-        # }, "marker_wo_cbar"),
-        #
-        # # plot_clf_genes -> clf_genes_umaps
-        # ("plot_clf_genes", {
-        #     "till_rank": 5,
-        #     "importance_th": 0.3,
-        #     "size_factor": 0.5,
-        #     "fontsize": 10,
-        # }, "till_rank_5_imp_th_03"),
-        #
-        # ("plot_clf_genes", {
-        #     "till_rank": 3,
-        #     "importance_th": 0.3,
-        #     "n_cols": 3,
-        # }, "till_rank_3_imp_th_03_n_cols_3"),
-        #
-        # # overlap:
-        # ("plot_gene_overlap", {"style": "venn"}, "venn"),
-        # ("plot_gene_overlap", {"style": "upset"}, "upset"),
-        #
-        # # dotplot:
-        # ("plot_masked_dotplot", {}, "default"),
-        # ("plot_masked_dotplot", {"comb_markers_only": True,
-        #                          "markers_only": True,
-        #                          "n_genes": 10}, "top10_markers"),
+        # plot_coexpression -> correlation_matrix
+        ("plot_coexpression", {
+            "selections": None,
+            "n_cols": 3,
+            "scale": True
+        }, "n_cols_3_scaled"),
+        ("plot_coexpression", {
+            "selections": None,
+            "n_cols": 1,
+            "scale": False
+        }, "n_cols_1_unscaled"),
+        ("plot_coexpression", {
+            "selections": ["marker"],
+            "colorbar": False
+        }, "marker_wo_cbar"),
+
+        # plot_clf_genes -> clf_genes_umaps
+        ("plot_clf_genes", {
+            "till_rank": 5,
+            "importance_th": 0.3,
+            "size_factor": 0.5,
+            "fontsize": 10,
+        }, "till_rank_5_imp_th_03"),
+
+        ("plot_clf_genes", {
+            "till_rank": 3,
+            "importance_th": 0.3,
+            "n_cols": 3,
+        }, "till_rank_3_imp_th_03_n_cols_3"),
+
+        # overlap:
+        ("plot_gene_overlap", {"style": "venn"}, "venn"),
+        ("plot_gene_overlap", {"style": "upset"}, "upset"),
+
+        # dotplot:
+        ("plot_masked_dotplot", {}, "default"),
+        ("plot_masked_dotplot", {"comb_markers_only": True,
+                                 "markers_only": True,
+                                 "n_genes": 10}, "top10_markers"),
     ]
 )
 def test_selection_plots(selector_with_penalties, fun, tmp_path, kwargs, fig_id):
@@ -98,13 +98,15 @@ def test_selection_plots(selector_with_penalties, fun, tmp_path, kwargs, fig_id)
 # evaluation #
 ##############
 
-
-def test_plot_summary(evaluator, tmp_path):
-    ref_name = "tests/plotting/test_data/plot_summary.png"
+@pytest.mark.parametrize("ev, ref_name", [
+                         # ("evaluator", "tests/plotting/test_data/plot_summary.png"),
+                          ("evaluator_X", "tests/plotting/test_data/plot_summary_X.png")])
+def test_plot_summary(ev, ref_name, tmp_path, request):
     fig_name = f"{tmp_path}/tmp_plot_summary.png"
-    evaluator.plot_summary(show=False, save=fig_name)
-    # evaluator.plot_summary(show=False, save=ref_name)
-    assert compare_images(ref_name, fig_name, 0.001) is None
+    ev = request.getfixturevalue(ev)
+    ev.plot_summary(show=False, save=fig_name)
+    # ev.plot_summary(show=False, save=ref_name)
+    assert compare_images( ref_name, fig_name, 0.001) is None
 
 
 @pytest.mark.parametrize(

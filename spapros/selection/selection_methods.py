@@ -224,7 +224,7 @@ def marker_scores(
         adata:
             Data with log normalised counts in adata.X.
         obs_key:
-            Column name of adata.obs for which marker scores are calculated.
+            Column name of `adata.obs` for which marker scores are calculated.
         groups:
             See sc.tl.rank_genes_groups().
         reference:
@@ -232,9 +232,9 @@ def marker_scores(
         rankby_abs:
             See sc.tl.rank_genes_groups().
         batch_aware:
-            Do stratified DE test with van_elteren_test.
+            If `True`, use stratified version of Wilcoxon rank sum test.
         batch_key:
-            Column name of adata.obs with batch annotation.
+            Key in `adata.obs` with batch annotations. Only necessary if `batch_aware=True`.
 
     Returns:
         pd.DataFrame:
@@ -285,8 +285,8 @@ def select_DE_genes(
     n: int,
     per_group: bool = False,
     obs_key: str = "celltype",
-    batch_key: str = "batch",
     batch_aware: bool = True,
+    batch_key: str = "batch",
     penalty_keys: list = [],
     groups: Union[Literal["all"], Iterable[str]] = "all",
     reference: str = "rest",
@@ -310,9 +310,9 @@ def select_DE_genes(
         obs_key:
             Column name of `adata.obs` for which marker scores are calculated.
         batch_aware:
-            Do stratified DE test with van_elteren_test.
+            If `True`, use stratified version of Wilcoxon rank sum test.
         batch_key:
-            Column name of adata.obs with batch annotation.
+            Key in `adata.obs` with batch annotations. Only necessary if `batch_aware=True`.
         penalty_keys:
             Penalty factor for gene selection.
         groups:
@@ -435,8 +435,8 @@ def add_DE_genes_to_trees(
     adata: sc.AnnData,
     tree_results: list,
     ct_key: str = "Celltypes",
-    batch_key: str = "batch",
     batch_aware: bool = True,
+    batch_key: str = "batch",
     n_DE: int = 1,
     min_score: float = 0.9,
     n_stds: float = 1.0,
@@ -483,11 +483,11 @@ def add_DE_genes_to_trees(
         tree_results:
             Results of :meth:`ev.forest_classifications()`.
         ct_key:
-            Key of adata.obs with celltype annotations.
-        batch_key:
-            Key in ``adata.obs`` with batch annotations. Only necessary if ``batch_aware=True``.
+            Key of `adata.obs` with celltype annotations.
         batch_aware:
             If `True`, use stratified version of Wilcoxon rank sum test.
+        batch_key:
+            Key in `adata.obs` with batch annotations. Only necessary if `batch_aware=True`.
         n_DE:
             Number of DE genes added per tree and iteration.
         min_score:

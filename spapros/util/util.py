@@ -1,3 +1,5 @@
+import os
+import random
 from typing import Callable
 from typing import Dict
 from typing import List
@@ -768,6 +770,9 @@ def marker_mean_difference(
     mean_other = adata[~(adata.obs[ct_key] == celltype), genes].X.mean(axis=0)
     return mean_ct - mean_other
 
+########################
+## Progress Bar Utils ##
+########################
 
 class NestedProgress(Progress):
     def get_renderables(self):
@@ -817,3 +822,90 @@ def init_progress(progress, verbosity, level):
         progress.start()
         started = True
     return progress, started
+
+
+####################
+## spaprosX utils ##
+####################
+
+
+def sample_cells(
+        adata: sc.AnnData,
+        n_out: int,
+        obs_key: Optional[str],
+        sampling_seed: Optional[int] = 0,
+        drop_unexpressed_genes: bool = False,
+        copy: bool = False,
+) -> sc.AnnData:
+    """Randomly sample cells from dataset.
+
+    Notes
+        The returned adata contains exactly ``n_out`` cells. The number of cells per group are thus as uniformly
+        distributed as possible.
+
+    Args:
+        adata:
+            Adata.
+        n_out:
+            Number of cells to sample.
+        obs_key:
+            Key in ``adata.obs`` with annotation of some groups. If not None, sample a uniform distribution over
+            these groups.
+        sampling_seed:
+            Random seed.
+        drop_unexpressed_genes:
+            Whether to remove genes which only zeros in expression matrix.
+        copy:
+            Whether to subset adata inplace or return a copy.
+
+    Returns:
+        Sampled adata.
+
+    """
+
+    if copy:
+        a = adata.copy()
+    else:
+        a = adata
+
+    if sampling_seed is not None:
+        random.seed(sampling_seed)
+
+    groups = a.obs[obs_key].unique()
+
+    # determine how many cells to sample per group
+    n_per_group_lower = n_out // len(groups)
+    group_sizes = a.obs[obs_key].value_counts()
+    remaining_groups = len(group_sizes[group_sizes > n_per_group_lower])
+    sure_cells = group_sizes[group_sizes <= n_per_group_lower].sum()
+    # iteratively drop batches with fewer cells than whished and recalculate the sample size for the remaining batches
+    while ((n_per_group_lower * remaining_groups) + sure_cells) < (n_out - remaining_groups):
+        remaining_cells = n_out - sure_cells
+        n_per_group_lower = (remaining_cells // remaining_groups)
+        sure_cells = group_sizes[group_sizes <= n_per_group_lower].sum()
+        remaining_groups = len(group_sizes[group_sizes > n_per_group_lower])
+    # fill last places randomly
+    sample_sizes = group_sizes.copy()
+    too_big_mask = group_sizes > n_per_group_lower
+    sample_sizes[too_big_mask] = n_per_group_lower
+    diff = n_out - sample_sizes.sum()
+    plus_one = random.sample(list(too_big_mask[too_big_mask].index), diff)
+    sample_sizes[plus_one] += 1
+
+    # do the sampling
+    sampling_mask = pd.DataFrame(index=a.obs.index)
+    sampling_mask["sampling"] = False
+    for group in groups:
+        idx = a.obs[a.obs[obs_key] == group].index
+        sample_idx = random.sample(list(idx), sample_sizes[group])
+        sampling_mask["sampling"].loc[sample_idx] = True
+    a = a[sampling_mask.values, :].copy()
+
+    keep_idx = sc.pp.filter_genes(a, min_counts=1, inplace=False)[0]
+    if drop_unexpressed_genes and not all(keep_idx):
+        a = a[:, keep_idx].copy()
+        print(f"After sampling cells in a celltype balanced manner, some genes were dropped from adata "
+              f"due to no remaining counts.")
+
+    if copy:
+        return a

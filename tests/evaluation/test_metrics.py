@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import scanpy as sc
-from spapros.evaluation.metrics import clustering_nmis
+from spapros.evaluation.metrics import clustering_nmis, summary_knn_AUC
 from spapros.evaluation.metrics import correlation_matrix
 from spapros.evaluation.metrics import knns
 from spapros.evaluation.metrics import leiden_clusterings
@@ -16,6 +16,20 @@ from spapros.evaluation.metrics import xgboost_forest_classification
 ############################
 # test shared computations #
 ############################
+
+def test_mean_overlap_X(small_adata, small_probeset):
+    ks = [10, 20]
+    knn_df = knns(small_adata, genes=small_probeset, ks=ks, batch_key="tissue")
+    ref_knn_df = knns(small_adata, genes="all", ks=ks, batch_key="tissue")
+    mean_df = mean_overlaps(knn_df, ref_knn_df, ks=ks, batch_key="tissue")
+    print(mean_df)
+    mean_ref = pd.DataFrame({
+        "tissue_3": [0.541638, 0.633848],
+        "tissue_1": [0.491319, 0.566243],
+        "tissue_2": [0.642143, 0.720847]},
+        index=ks,
+        columns=pd.CategoricalIndex(["tissue_3", "tissue_1", "tissue_2"]))
+    assert pd.testing.assert_frame_equal(mean_df, mean_ref, check_exact=False) is None
 
 
 @pytest.mark.skip(reason="succeeds locally but fails on github")
@@ -255,10 +269,14 @@ def test_summary_nmi_AUCs(small_adata, small_probeset, ns, AUC_borders):
     assert all([x <= 1 for x in AUCs.values()])
 
 
-def summary_knn_AUC(small_adata, small_probeset):
+@pytest.mark.parametrize("batch_key", [None, "tissue"])
+def test_summary_knn_AUC(small_adata, small_probeset, batch_key):
     ks = [10, 12]
-    knn_df = knns(small_adata[:100, :], genes=small_probeset, ks=ks)
-    ref_knn_df = knns(small_adata[:100, :], genes="all", ks=ks)
+    knn_df = knns(small_adata[:100, :], genes=small_probeset, ks=ks, batch_key=batch_key)
+    ref_knn_df = knns(small_adata[:100, :], genes="all", ks=ks, batch_key=batch_key)
     mean_df = mean_overlaps(knn_df, ref_knn_df, ks=ks)
     AUC = summary_knn_AUC(mean_df)
-    assert all([x <= 1 for x in AUC.values()])
+    if batch_key is None:
+        np.testing.assert_almost_equal(AUC, 0.6532386)
+    elif batch_key == "tissue":
+        np.testing.assert_almost_equal(AUC, 0.6619191)

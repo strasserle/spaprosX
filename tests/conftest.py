@@ -175,7 +175,9 @@ def evaluator_with_dir(small_adata):
     # random.seed(0)
     # small_adata = small_adata[random.sample(range(small_adata.n_obs), 100), :]
     evaluator = ev.ProbesetEvaluator(
-        small_adata, scheme="full", verbosity=0, results_dir="tests/evaluation/test_data/evaluation_results_probeset1"
+        small_adata,
+        scheme="full",
+        verbosity=0, results_dir="tests/evaluation/test_data/evaluation_results_probeset1"
     )
     return evaluator
 
@@ -192,13 +194,45 @@ def evaluator_4_sets(small_adata, marker_list):
         small_adata,
         scheme="full",
         verbosity=0,
-        results_dir="tests/evaluation/test_data/evaluation_results_4_sets",
+        results_dir=None,
+        # results_dir="tests/evaluation/test_data/evaluation_results_4_sets",
         marker_list=marker_list
     )
     four_probesets = pd.read_csv("tests/evaluation/test_data/4_probesets_of_20.csv",
                                  index_col=0)
     for set_id in four_probesets:
         evaluator.evaluate_probeset(set_id=set_id, genes=list(four_probesets[set_id]))
+    return evaluator
+
+@pytest.fixture()
+def evaluator_X(small_adata, marker_list):
+    evaluator = ev.ProbesetEvaluator(
+        small_adata,
+        scheme="full",
+        verbosity=0,
+        # results_dir="tests/evaluation/test_data/evaluation_results_X",
+        results_dir=None,
+        marker_list=marker_list,
+        batch_key="tissue",
+    )
+    four_probesets = pd.read_csv("tests/evaluation/test_data/4_probesets_of_20.csv",
+                                 index_col=0)
+    for set_id in four_probesets:
+        evaluator.evaluate_probeset(set_id=set_id, genes=list(four_probesets[set_id]))
+    return evaluator
+
+
+@pytest.fixture()
+def two_batch_evaluator(small_adata):
+    small_adata.obs["patient"] = ["patient_1", "patient_2"] * 1350
+    evaluator = ev.ProbesetEvaluator(
+        small_adata,
+        scheme="full",
+        verbosity=0,
+        # results_dir="tests/evaluation/test_data/evaluation_results_2batches",
+        results_dir = None,
+        batch_key=["tissue", "patient"]
+    )
     return evaluator
 
 
