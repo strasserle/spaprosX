@@ -37,16 +37,8 @@ def run_selection(adata_path: str, output_path: str) -> None:
     a = preprocess_adata(adata, options=["norm", "log1p"], inplace=False)
 
     with console.status("Selecting genes with PCA..."):
-        selected_df = select_pca_genes(
-            a,
-            100,
-            variance_scaled=False,
-            absolute=True,
-            n_pcs=20,
-            penalty_keys=[],
-            corr_penalty=None,
-            inplace=False,
-        )
+        selected_df = select_pca_genes(a, 100, variance_scaled=False, absolute=True, n_pcs=20, penalty_keys=[],
+                                       batch_key=self.batch_key, corr_penalty=None, inplace=False)
         console.print(f"[bold blue]Using {len(selected_df)} genes")
 
     Path(output_path).mkdir(parents=True, exist_ok=True)
@@ -64,16 +56,8 @@ def run_selection(adata_path: str, output_path: str) -> None:
     penalty = plateau_penalty_kernel(var=var, x_min=lower_th, x_max=upper_th)
     adata.var["expression_penalty"] = penalty(adata.var["quantile_0.99"])
     a = preprocess_adata(adata, options=["norm", "log1p"], inplace=False)
-    select_pca_genes(
-        a,
-        100,
-        variance_scaled=False,
-        absolute=True,
-        n_pcs=20,
-        penalty_keys=["expression_penalty"],
-        corr_penalty=None,
-        inplace=True,
-    )
+    select_pca_genes(a, 100, variance_scaled=False, absolute=True, n_pcs=20, penalty_keys=["expression_penalty"],
+                     batch_key=self.batch_key, corr_penalty=None, inplace=True)
 
     #######################################################################################
     # Systematic selections pipeline to create probeset files for the evaluation pipeline #

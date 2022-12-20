@@ -106,6 +106,8 @@ def select_pca_genes(
     absolute: bool = True,
     n_pcs: int = 20,
     penalty_keys: list = [],
+    batch_aware: bool = True,
+    batch_key: Optional[str] = "batch",
     corr_penalty: Callable = None,
     inplace: bool = True,
     progress: Optional[Progress] = None,
@@ -115,6 +117,8 @@ def select_pca_genes(
     """Select n features based on pca loadings.
 
     Args:
+        batch_key:
+        batch_aware:
         adata:
             Data with log normalised counts in adata.X.
         n:
@@ -128,6 +132,10 @@ def select_pca_genes(
             Number of PCs used to calculate loadings sums.
         penalty_keys:
             List of keys for columns in adata.var that are multiplied with the scores.
+        batch_aware:
+            If `True`, calculate PCA scores per batch and average.
+        batch_key:
+            Key in `adata.obs` with batch annotations. Only necessary if `batch_aware=True`.
         corr_penalty:
             Function that maps values from [0,1] to [0,1]. It describes an iterative penalty function
             that is applied on pca selected genes. The highest correlation with already selected genes
@@ -161,35 +169,53 @@ def select_pca_genes(
     if n_pcs > a.n_vars:
         n_pcs = a.n_vars
 
-    clean_adata(a)
+    clean_adata(a, obs_keys=[batch_key])
+
+    if batch_aware:
+        batches = a.obs[batch_key].unique()
+    else:
+        batches=["no_batch"]
 
     if progress and 2 * verbosity >= level:
-        pca_task = progress.add_task("Select pca genes...", total=1, level=1)
+        pca_task = progress.add_task("Select pca genes...", total=1*len(batches), level=1)
 
-    sc.pp.pca(
-        a,
-        n_comps=n_pcs,
-        zero_center=True,
-        svd_solver="arpack",
-        random_state=0,
-        return_info=True,
-        copy=False,
-    )
+    scoresXbatch = pd.DataFrame(index=adata.var.index, columns=batches)
+    for batch in batches:
+        if batch_aware:
+            a_batch = a[a.obs[batch_key]==batch].copy()
+        else:
+            a_batch = a
 
-    if progress and 2 * verbosity >= level:
-        progress.advance(pca_task)
+        sc.pp.pca(
+            a_batch,
+            n_comps=n_pcs,
+            zero_center=True,
+            svd_solver="arpack",
+            random_state=0,
+            return_info=True,
+            copy=False,
+        )
 
-    loadings = a.varm["PCs"].copy()[:, :n_pcs]
-    if variance_scaled:
-        loadings *= np.sqrt(a.uns["pca"]["variance"][:n_pcs])
-    if absolute:
-        loadings = abs(loadings)
+        if progress and 2 * verbosity >= level:
+            progress.advance(pca_task)
 
-    scores = pd.DataFrame(index=adata.var.index, data={"scores": np.sum(loadings, axis=1)})
+        loadings = a_batch.varm["PCs"].copy()[:, :n_pcs]
+        if variance_scaled:
+            loadings *= np.sqrt(a_batch.uns["pca"]["variance"][:n_pcs])
+        if absolute:
+            loadings = abs(loadings)
+
+        scoresXbatch.loc[:, batch] = np.sum(loadings, axis=1)
+
+    # average over batches
+    scores = pd.DataFrame({"scores": scoresXbatch.mean(axis=1)})
+
+    # apply penalties
     scores = apply_penalties(scores, adata, penalty_keys=penalty_keys)
     if not (corr_penalty is None):
         scores = apply_correlation_penalty(scores, adata, corr_penalty)
 
+    # select genes with the largest scores
     selected_genes = scores.nlargest(n, "scores").index.values
     selection = pd.DataFrame(
         index=scores.index,
@@ -250,8 +276,10 @@ def marker_scores(
             ct_key=obs_key,
             batch_key=batch_key,
             copy=True,
+            groups=groups,
             reference=ref,
             rankby_abs=rankby_abs,
+            use_raw=False,
         )
 
     else:
@@ -1784,10 +1812,10 @@ def select_selfE_features(adata: sc.AnnData, n: int, inplace: bool = True, verbo
 ############################ batch-aware methods##################################
 ##################################################################################
 
-def van_elteren_test(adata, ct_key, batch_key, norm=False, copy=False, **kwargs):
+def van_elteren_test(adata, ct_key, batch_key, groups, reference, norm=False, copy=False, **kwargs):
     """Stratified DE test.
 
-    Only makes sense if same celltypes in batches!
+    TODO handle missing cell types
 
     Args:
         adata:
@@ -1796,6 +1824,10 @@ def van_elteren_test(adata, ct_key, batch_key, norm=False, copy=False, **kwargs)
             Key of `adata.obs` grouping the samples.
         batch_key:
             Key of `adata.obs` grouping the stata.
+        groups:
+            See sc.tl.rank_genes_groups().
+        reference:
+            See sc.tl.rank_genes_groups().
         norm:
             Divide test statistic score by number of batches for each cell type to compensate rare celltypes.
         copy:
@@ -1808,7 +1840,7 @@ def van_elteren_test(adata, ct_key, batch_key, norm=False, copy=False, **kwargs)
     """
     adata = adata.copy() if copy else adata
     batches = list(adata.obs[batch_key].unique())
-    celltypes = adata.obs[ct_key].cat.categories
+    celltypes = adata.obs[ct_key].cat.categories if groups == "all" else list(set(groups))
 
     # initialize output dataframes
     w_stats = {}
@@ -1834,14 +1866,19 @@ def van_elteren_test(adata, ct_key, batch_key, norm=False, copy=False, **kwargs)
         sc.tl.rank_genes_groups(
             adata_b,
             groupby=ct_key,
+            groups=groups,
+            reference=reference,
+            n_genes=adata_b.n_vars,
             method="wilcoxon",
-            **kwargs
+            corr_method="benjamini-hochberg",
+            **kwargs # useraw and rankby_abs
         )
         params = adata_b.uns[key_added]["params"]
         results_r = adata_b.uns[key_added]
-        reference = adata_b.uns[key_added]["params"]["reference"]
         if reference == "rest":
-            reference = list(adata_b.obs[ct_key].unique())
+            ref = list(adata_b.obs[ct_key].unique())
+        else:
+            ref = [reference]
 
         # weight wilcoxon rank sum statistic
         # for ct in results_r["names"].dtype.names:
@@ -1859,9 +1896,9 @@ def van_elteren_test(adata, ct_key, batch_key, norm=False, copy=False, **kwargs)
             # sample size of group (ct) for current stratum (batch)
             n = adata_b[adata_b.obs[ct_key] == ct].shape[0]
             # sample size of second group (rest) for current stratum (batch)
-            m_mask = adata_b.obs[ct_key].isin(reference)
+            m_mask = adata_b.obs[ct_key].isin(ref)
             m = m_mask.sum()
-            if ct in reference:
+            if ct in ref:
                 m = m - n
             if  "weight" in kwargs and kwargs["weight"] == False:
                 weight = 1
@@ -1882,11 +1919,11 @@ def van_elteren_test(adata, ct_key, batch_key, norm=False, copy=False, **kwargs)
 
         # basic stats
         ct_mask = adata.obs[ct_key] == ct
-        means_ct = np.mean(adata.X[ct_mask], axis=0, dtype=np.float64)
-        rest_mask = adata.obs[ct_key].isin(reference)
-        if ct in reference:
+        means_ct = np.ravel(np.mean(adata.X[ct_mask], axis=0, dtype=np.float64))
+        rest_mask = adata.obs[ct_key].isin(ref)
+        if ct in ref:
             rest_mask[ct_mask] = False
-        means_rest = np.mean(adata.X[rest_mask], axis=0, dtype=np.float64)
+        means_rest = np.ravel(np.mean(adata.X[rest_mask], axis=0, dtype=np.float64))
 
         # calculate scores and pvals
         scores = list(w_stats[ct].sum(axis=1))

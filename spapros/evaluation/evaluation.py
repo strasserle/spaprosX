@@ -1901,14 +1901,6 @@ def single_forest_classifications(
     #  date)
     # TODO: Add progress bars to trees, and maybe change verbose to verbosity levels
 
-    # if verbose:
-    #     try:
-    #         from tqdm.notebook import tqdm
-    #     except ImportError:
-    #         from tqdm import tqdm_notebook as tqdm
-    # else:
-    #     tqdm = None
-
     n_jobs = _get_n_cores(n_jobs)
 
     if isinstance(selection, (list, np.ndarray, np.generic)):
@@ -2248,16 +2240,6 @@ def forest_classifications(
 
     """
 
-    # TODO write docstring
-
-    # if verbosity > 0:
-    #     try:
-    #         from tqdm.notebook import tqdm
-    #     except ImportError:
-    #         from tqdm import tqdm_notebook as tqdm
-    # else:
-    #     tqdm = None
-
     ct_spec_ref = None
     res = None
     with_clfs = "return_clfs" in forest_kwargs and forest_kwargs["return_clfs"]
@@ -2268,7 +2250,6 @@ def forest_classifications(
         stop_progress = True
     if progress and 2 * verbosity >= level:
         forest_task = progress.add_task(task, total=max_n_forests, level=level)
-    # for _ in tqdm(range(max_n_forests), desc="Train hierarchical trees") if tqdm else range(max_n_forests):
     for _ in range(max_n_forests):
         new_res = single_forest_classifications(
             adata,

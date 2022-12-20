@@ -31,6 +31,32 @@ def tiny_adata(small_adata):
     # np.isnan(small_adata.X.toarray()).all(axis=1)
     return tiny_adata
 
+@pytest.fixture()
+def tiny_adata_w_penalties(tiny_adata, lower_th=1, upper_th=3.5):
+    # we don't set fixed expression thresholds. Instead, we introduce smoothness factors (heuristic user choice)
+    factor = 1
+    var = [factor * 0.1, factor * 0.5]
+
+    # get the expression quantiles
+    util.get_expression_quantile(tiny_adata, q=0.99, log1p=False, zeros_to_nan=False, normalise=False)
+    # design the penalty kernel
+    penalty = util.plateau_penalty_kernel(var=var, x_min=np.array(lower_th), x_max=np.array(upper_th))
+    # calcluate the expression penalties
+    tiny_adata.var['expression_penalty'] = penalty(tiny_adata.var['quantile_0.99'])
+
+    # upper
+    util.get_expression_quantile(tiny_adata, q=0.99, log1p=False, zeros_to_nan=False, normalise=False)
+    penalty = util.plateau_penalty_kernel(var=var, x_min=None, x_max=upper_th)
+    tiny_adata.var['expression_penalty_upper'] = penalty(tiny_adata.var['quantile_0.99'])
+
+    # lower
+    util.get_expression_quantile(tiny_adata, q=0.9, log1p=False, zeros_to_nan=True, normalise=False)
+    penalty = util.plateau_penalty_kernel(var=var, x_min=lower_th, x_max=None)
+    tiny_adata.var['expression_penalty_lower'] = penalty(tiny_adata.var['quantile_0.9 expr > 0'])
+
+    sc.pp.log1p(tiny_adata)
+    return tiny_adata
+
 
 @pytest.fixture()
 def adata_pbmc3k():
@@ -79,28 +105,7 @@ def selector_with_marker(tiny_adata):
 @pytest.fixture()
 def selector_with_penalties(tiny_adata, lower_th=1, upper_th=3.5):
 
-    # we don't set fixed expression thresholds. Instead, we introduce smoothness factors (heuristic user choice)
-    factor = 1
-    var = [factor * 0.1, factor * 0.5]
-
-    # get the expression quantiles
-    util.get_expression_quantile(tiny_adata, q=0.99, log1p=False, zeros_to_nan=False, normalise=False)
-    # design the penalty kernel
-    penalty = util.plateau_penalty_kernel(var=var, x_min=np.array(lower_th), x_max=np.array(upper_th))
-    # calcluate the expression penalties
-    tiny_adata.var['expression_penalty'] = penalty(tiny_adata.var['quantile_0.99'])
-
-    # upper
-    util.get_expression_quantile(tiny_adata, q=0.99, log1p=False, zeros_to_nan=False, normalise=False)
-    penalty = util.plateau_penalty_kernel(var=var, x_min=None, x_max=upper_th)
-    tiny_adata.var['expression_penalty_upper'] = penalty(tiny_adata.var['quantile_0.99'])
-
-    # lower
-    util.get_expression_quantile(tiny_adata, q=0.9, log1p=False, zeros_to_nan=True, normalise=False)
-    penalty = util.plateau_penalty_kernel(var=var, x_min=lower_th, x_max=None)
-    tiny_adata.var['expression_penalty_lower'] = penalty(tiny_adata.var['quantile_0.9 expr > 0'])
-
-    sc.pp.log1p(tiny_adata)
+    tiny_adata = tiny_adata_w_penalties(lower_th=1, upper_th=3.5)
     selector = se.ProbesetSelector(
         tiny_adata,
         n=50,

@@ -576,16 +576,16 @@ class ProbesetSelector:  # (object)
     def _pca_selection(self) -> None:
         """Select genes based on pca loadings."""
         if self.selection["pca"] is None:
-            self.selection["pca"] = select.select_pca_genes(
-                self.adata[:, self.genes],
-                self.n_pca_genes,
-                penalty_keys=self.pca_penalties,
-                inplace=False,
-                progress=self.progress,
-                level=1,
-                verbosity=self.verbosity,
-                **self.pca_selection_hparams,
-            )
+            self.selection["pca"] = select.select_pca_genes(self.adata[:, self.genes],
+                                                            self.n_pca_genes,
+                                                            penalty_keys=self.pca_penalties,
+                                                            batch_aware=self.batch_aware,
+                                                            batch_key=self.batch_key,
+                                                            inplace=False,
+                                                            progress=self.progress,
+                                                            level=1,
+                                                            verbosity=self.verbosity,
+                                                            **self.pca_selection_hparams)
             assert self.selection["pca"] is not None
             self.selection["pca"] = self.selection["pca"].sort_values("selection_ranking")
 
@@ -2089,7 +2089,7 @@ def select_reference_probesets(
     adata: sc.AnnData,
     n: int,
     genes_key: str = "highly_variable",
-    methods: Union[List[str], Dict[str, Dict]] = ["PCA", "DE", "DEX", "HVG", "random"],
+    methods: Union[List[str], Dict[str, Dict]] = ["PCA", "PCAX", "DE", "DEX", "HVG", "random"],
     seeds: List[int] = [0],
     verbosity: int = 2,
     save_dir: Union[str, None] = None,
@@ -2104,8 +2104,9 @@ def select_reference_probesets(
         genes_key:
             Key of ``adata.var`` for preselected genes (typically 'highly_variable_genes').
         methods:
-            Methods used for selections. Supported methods and default are `['PCA', 'DE', 'HVG', 'random']`. To specify
-            hyperparameters of the methods provide a dictionary, e.g.::
+            Methods used for selections. Supported methods and default are
+            `['PCA', 'PCAX' 'DE', 'DEX', 'HVG', 'random']`. To specify hyperparameters of the methods provide a
+            dictionary, e.g.::
 
                 {
                     'DE':{},
@@ -2131,6 +2132,7 @@ def select_reference_probesets(
     # Supported selection functions
     selection_fcts: Dict[str, Callable] = {
         "PCA": select.select_pca_genes,
+        "PCAX": select.select_pca_genes,
         "DE": select.select_DE_genes,
         "DEX": select.select_DE_genes,
         "random": select.random_selection,
@@ -2161,6 +2163,19 @@ def select_reference_probesets(
         else:
             print(f"Skipping DEX reference selection because {batch_key} not in adata.obs.")
             del methods["DEX"]
+    if "PCA" in methods:
+        methods["PCA"]["batch_aware"] =False
+    if "PCAX" in methods:
+        if "batch_key" in methods["PCAX"]:
+            batch_key = methods["PCAX"]["batch_key"]
+        else:
+            batch_key = "batch"
+        if batch_key in adata.obs:
+            methods["PCAX"]["batch_aware"] = True
+            methods["PCAX"]["batch_key"] = batch_key
+        else:
+            print(f"Skipping PCAX reference selection because {batch_key} not in adata.obs.")
+            del methods["PCAX"]
 
     # Create list of planed selections
     selections: List[dict] = []
