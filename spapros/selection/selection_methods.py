@@ -179,7 +179,7 @@ def select_pca_genes(
     if progress and 2 * verbosity >= level:
         pca_task = progress.add_task("Select pca genes...", total=1*len(batches), level=1)
 
-    scoresXbatch = pd.DataFrame(index=adata.var.index, columns=batches)
+    scoresXbatch = pd.DataFrame(index=a.var.index, columns=batches)
     for batch in batches:
         if batch_aware:
             a_batch = a[a.obs[batch_key]==batch].copy()
