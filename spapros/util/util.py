@@ -1002,8 +1002,11 @@ def sample_cells(
     if isinstance(obs_key, list):
         for key in obs_key:
             print(a.obs[key].cat.categories)
+            print(a.obs[key].value_counts())
     else:
         print(a.obs[obs_key].categories)
+        print(a.obs[obs_key].value_counts())
+
     if copy:
         return a
 
