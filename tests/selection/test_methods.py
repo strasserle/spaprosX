@@ -3,6 +3,7 @@ import random
 import pandas as pd
 import pytest
 from spapros import se
+from spapros.selection import select_pca_genes
 
 
 @pytest.mark.parametrize("genes_key", ["highly_variable", None])
@@ -114,7 +115,7 @@ def test_selection_stable(adata_pbmc3k):
 
 
 @pytest.mark.parametrize(
-    "n, " "genes_key, " "seeds, " "verbosity, " "save_dir, " "reference_selections",
+    "n, " "genes_key, " "seeds, " "verbosity, " "save_dir, " "methods",
     [
         (
             10,
@@ -137,8 +138,8 @@ def test_selection_stable(adata_pbmc3k):
         ),
         (
             50,
-            None,
-            None,
+            "highly_variable",
+            [],
             1,
             None,
             {
@@ -151,11 +152,11 @@ def test_selection_stable(adata_pbmc3k):
                 "DE_selection": {"per_group": "False"},
             },
         ),
-        (100, None, None, 2, "tmp_path", None),
+        (100, "highly_variable", [], 2, "tmp_path", ["PCA", "DE", "HVG", "random"]),
     ],
 )
 def test_select_reference_probesets(
-    adata_pbmc3k, n, genes_key, seeds, verbosity, save_dir, request, reference_selections
+    adata_pbmc3k, n, genes_key, seeds, verbosity, save_dir, request, methods
 ):
     se.select_reference_probesets(
         adata_pbmc3k,
@@ -164,5 +165,54 @@ def test_select_reference_probesets(
         seeds=seeds,
         verbosity=verbosity,
         save_dir=None if not save_dir else request.getfixturevalue(save_dir),
-        reference_selections=reference_selections,
+        methods=methods,
     )
+
+##################################
+## test for batch aware methods ##
+##################################
+
+def test_select_pca_genes_per_batch(tiny_adata_w_penalties):
+    a = tiny_adata_w_penalties
+    a.obs["batch"] = ["batch_1", "batch_2"] * (a.shape[0]//2)
+    a.obs["one_batch"] = ["one_batch"] * a.shape[0]
+
+    selection_df_X_batch = select_pca_genes(
+        a,
+        n=50,
+        penalty_keys=["expression_penalty_upper", "expression_penalty_lower"],
+        batch_aware=True,
+        batch_key="batch",
+        corr_penalty=None,
+        inplace=False,
+    )
+
+    selection_df_one_batch = select_pca_genes(
+        a,
+        n=50,
+        penalty_keys=["expression_penalty_upper", "expression_penalty_lower"],
+        batch_aware=True,
+        batch_key="one_batch",
+        corr_penalty=None,
+        inplace=False,
+    )
+
+    selection_df = select_pca_genes(
+        a,
+        n=50,
+        penalty_keys=["expression_penalty_upper", "expression_penalty_lower"],
+        batch_aware=False,
+        batch_key=None,
+        corr_penalty=None,
+        inplace=False,
+    )
+
+    assert selection_df.shape == selection_df_X_batch.shape
+    assert pd.testing.assert_frame_equal(selection_df_one_batch, selection_df) is None
+
+
+
+
+
+
+

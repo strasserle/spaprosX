@@ -18,6 +18,7 @@ from rich.progress import TaskID
 from sklearn.decomposition import SparsePCA
 from spapros.evaluation.evaluation import forest_classifications
 from spapros.util.util import clean_adata
+from statsmodels.stats.multitest import multipletests
 
 
 def apply_correlation_penalty(
@@ -105,6 +106,8 @@ def select_pca_genes(
     absolute: bool = True,
     n_pcs: int = 20,
     penalty_keys: list = [],
+    batch_aware: bool = True,
+    batch_key: Optional[str] = "batch",
     corr_penalty: Callable = None,
     inplace: bool = True,
     progress: Optional[Progress] = None,
@@ -114,6 +117,8 @@ def select_pca_genes(
     """Select n features based on pca loadings.
 
     Args:
+        batch_key:
+        batch_aware:
         adata:
             Data with log normalised counts in adata.X.
         n:
@@ -127,6 +132,10 @@ def select_pca_genes(
             Number of PCs used to calculate loadings sums.
         penalty_keys:
             List of keys for columns in adata.var that are multiplied with the scores.
+        batch_aware:
+            If `True`, calculate PCA scores per batch and average.
+        batch_key:
+            Key in `adata.obs` with batch annotations. Only necessary if `batch_aware=True`.
         corr_penalty:
             Function that maps values from [0,1] to [0,1]. It describes an iterative penalty function
             that is applied on pca selected genes. The highest correlation with already selected genes
@@ -160,35 +169,53 @@ def select_pca_genes(
     if n_pcs > a.n_vars:
         n_pcs = a.n_vars
 
-    clean_adata(a)
+    clean_adata(a, obs_keys=[batch_key])
+
+    if batch_aware:
+        batches = a.obs[batch_key].unique()
+    else:
+        batches=["no_batch"]
 
     if progress and 2 * verbosity >= level:
-        pca_task = progress.add_task("Select pca genes...", total=1, level=1)
+        pca_task = progress.add_task("Select pca genes...", total=1*len(batches), level=1)
 
-    sc.pp.pca(
-        a,
-        n_comps=n_pcs,
-        zero_center=True,
-        svd_solver="arpack",
-        random_state=0,
-        return_info=True,
-        copy=False,
-    )
+    scoresXbatch = pd.DataFrame(index=adata.var.index, columns=batches)
+    for batch in batches:
+        if batch_aware:
+            a_batch = a[a.obs[batch_key]==batch].copy()
+        else:
+            a_batch = a
 
-    if progress and 2 * verbosity >= level:
-        progress.advance(pca_task)
+        sc.pp.pca(
+            a_batch,
+            n_comps=n_pcs,
+            zero_center=True,
+            svd_solver="arpack",
+            random_state=0,
+            return_info=True,
+            copy=False,
+        )
 
-    loadings = a.varm["PCs"].copy()[:, :n_pcs]
-    if variance_scaled:
-        loadings *= np.sqrt(a.uns["pca"]["variance"][:n_pcs])
-    if absolute:
-        loadings = abs(loadings)
+        if progress and 2 * verbosity >= level:
+            progress.advance(pca_task)
 
-    scores = pd.DataFrame(index=adata.var.index, data={"scores": np.sum(loadings, axis=1)})
+        loadings = a_batch.varm["PCs"].copy()[:, :n_pcs]
+        if variance_scaled:
+            loadings *= np.sqrt(a_batch.uns["pca"]["variance"][:n_pcs])
+        if absolute:
+            loadings = abs(loadings)
+
+        scoresXbatch.loc[:, batch] = np.sum(loadings, axis=1)
+
+    # average over batches
+    scores = pd.DataFrame({"scores": scoresXbatch.mean(axis=1)})
+
+    # apply penalties
     scores = apply_penalties(scores, adata, penalty_keys=penalty_keys)
     if not (corr_penalty is None):
         scores = apply_correlation_penalty(scores, adata, corr_penalty)
 
+    # select genes with the largest scores
     selected_genes = scores.nlargest(n, "scores").index.values
     selection = pd.DataFrame(
         index=scores.index,
@@ -214,6 +241,8 @@ def marker_scores(
     groups: Union[Literal["all"], Iterable[str]] = "all",
     reference: str = "rest",
     rankby_abs: bool = False,
+    batch_aware: bool = True,
+    batch_key: str = "batch",
 ) -> pd.DataFrame:
     """Compute marker scores for genes in adata.
 
@@ -221,13 +250,17 @@ def marker_scores(
         adata:
             Data with log normalised counts in adata.X.
         obs_key:
-            Column name of adata.obs for which marker scores are calculated.
+            Column name of `adata.obs` for which marker scores are calculated.
         groups:
             See sc.tl.rank_genes_groups().
         reference:
             See sc.tl.rank_genes_groups().
         rankby_abs:
             See sc.tl.rank_genes_groups().
+        batch_aware:
+            If `True`, use stratified version of Wilcoxon rank sum test.
+        batch_key:
+            Key in `adata.obs` with batch annotations. Only necessary if `batch_aware=True`.
 
     Returns:
         pd.DataFrame:
@@ -236,22 +269,37 @@ def marker_scores(
     df = pd.DataFrame(index=adata.var.index)
     adata_ = adata if isinstance(reference, str) else adata[adata.obs[obs_key].isin(reference)]
     ref = reference if isinstance(reference, str) else "rest"
-    a = sc.tl.rank_genes_groups(
-        adata_,
-        obs_key,
-        use_raw=False,
-        groups=groups,
-        reference=ref,
-        n_genes=adata.n_vars,
-        rankby_abs=rankby_abs,
-        copy=True,
-        method="wilcoxon",
-        corr_method="benjamini-hochberg",
-    )
-    names = a.uns["rank_genes_groups"]["scores"].dtype.names
+    if batch_aware:
+        key_added = "rank_genes_groups_stratified"
+        a = van_elteren_test(
+            adata_,
+            ct_key=obs_key,
+            batch_key=batch_key,
+            copy=True,
+            groups=groups,
+            reference=ref,
+            rankby_abs=rankby_abs,
+            use_raw=False,
+        )
+
+    else:
+        key_added = "rank_genes_groups"
+        a = sc.tl.rank_genes_groups(
+            adata_,
+            obs_key,
+            use_raw=False,
+            groups=groups,
+            reference=ref,
+            n_genes=adata.n_vars,
+            rankby_abs=rankby_abs,
+            copy=True,
+            method="wilcoxon",
+            corr_method="benjamini-hochberg",
+        )
+    names = a.uns[key_added]["scores"].dtype.names
     marker_scores = {
         name: pd.DataFrame(
-            index=a.uns["rank_genes_groups"]["names"][name], data={name: a.uns["rank_genes_groups"]["scores"][name]}
+            index=a.uns[key_added]["names"][name], data={name: a.uns[key_added]["scores"][name]}
         )
         for name in names
     }
@@ -265,6 +313,8 @@ def select_DE_genes(
     n: int,
     per_group: bool = False,
     obs_key: str = "celltype",
+    batch_aware: bool = True,
+    batch_key: str = "batch",
     penalty_keys: list = [],
     groups: Union[Literal["all"], Iterable[str]] = "all",
     reference: str = "rest",
@@ -287,6 +337,10 @@ def select_DE_genes(
             selected for multiple groups.
         obs_key:
             Column name of `adata.obs` for which marker scores are calculated.
+        batch_aware:
+            If `True`, use stratified version of Wilcoxon rank sum test.
+        batch_key:
+            Key in `adata.obs` with batch annotations. Only necessary if `batch_aware=True`.
         penalty_keys:
             Penalty factor for gene selection.
         groups:
@@ -322,7 +376,15 @@ def select_DE_genes(
         groups = group_counts[group_counts].index.to_list()
 
     selection = pd.DataFrame(index=a.var.index, data={"selection": False})
-    scores = marker_scores(a, obs_key=obs_key, groups=groups, reference=reference, rankby_abs=rankby_abs)
+    scores = marker_scores(
+        a,
+        obs_key=obs_key,
+        groups=groups,
+        reference=reference,
+        rankby_abs=rankby_abs,
+        batch_key=batch_key,
+        batch_aware=batch_aware,
+    )
     scores = apply_penalties(scores, a, penalty_keys=penalty_keys)
     if per_group:
         if progress and 2 * verbosity >= level:
@@ -401,6 +463,8 @@ def add_DE_genes_to_trees(
     adata: sc.AnnData,
     tree_results: list,
     ct_key: str = "Celltypes",
+    batch_aware: bool = True,
+    batch_key: str = "batch",
     n_DE: int = 1,
     min_score: float = 0.9,
     n_stds: float = 1.0,
@@ -447,7 +511,11 @@ def add_DE_genes_to_trees(
         tree_results:
             Results of :meth:`ev.forest_classifications()`.
         ct_key:
-            Key of adata.obs with celltype annotations.
+            Key of `adata.obs` with celltype annotations.
+        batch_aware:
+            If `True`, use stratified version of Wilcoxon rank sum test.
+        batch_key:
+            Key in `adata.obs` with batch annotations. Only necessary if `batch_aware=True`.
         n_DE:
             Number of DE genes added per tree and iteration.
         min_score:
@@ -576,6 +644,8 @@ def add_DE_genes_to_trees(
                 n_DE,
                 per_group=True,
                 obs_key=ct_key,
+                batch_key=batch_key,
+                batch_aware=batch_aware,
                 penalty_keys=penalty_keys,
                 groups=[ct],
                 reference=ct_to_reference[ct],
@@ -1736,3 +1806,173 @@ def select_selfE_features(adata: sc.AnnData, n: int, inplace: bool = True, verbo
         adata.var["selection"] = df["selection"].copy()
     else:
         return df[["selection"]].copy()
+
+
+##################################################################################
+############################ batch-aware methods##################################
+##################################################################################
+
+def van_elteren_test(adata, ct_key, batch_key, groups, reference, norm=False, copy=False, **kwargs):
+    """Stratified DE test.
+
+    TODO handle missing cell types
+
+    Args:
+        adata:
+            Annotated data matrix. Data should be logarithmized.
+        ct_key:
+            Key of `adata.obs` grouping the samples.
+        batch_key:
+            Key of `adata.obs` grouping the stata.
+        groups:
+            See sc.tl.rank_genes_groups().
+        reference:
+            See sc.tl.rank_genes_groups().
+        norm:
+            Divide test statistic score by number of batches for each cell type to compensate rare celltypes.
+        copy:
+            If True, return DataFrame, otherwise results are stored in `adata.obs[key_added]` .
+        **kwargs:
+            Further arguments for `sc.rank_genes_groups()`
+
+    Returns:
+
+    """
+    adata = adata.copy() if copy else adata
+    batches = list(adata.obs[batch_key].unique())
+    celltypes = adata.obs[ct_key].cat.categories if groups == "all" else list(set(groups))
+
+    # initialize output dataframes
+    w_stats = {}
+    for ct in celltypes:
+        w_stats[ct] = pd.DataFrame(index=adata.var_names)
+
+    # target obs key
+    if "key_added" in kwargs:
+        key_added = kwargs["key_added"]
+    else:
+        key_added = "rank_genes_groups"
+
+    # for logfoldchange
+    if 'log1p' in adata.uns_keys() and adata.uns['log1p']['base'] is not None:
+        expm1_func = lambda x: np.expm1(x * np.log(adata.uns['log1p']['base']))
+    else:
+        expm1_func = np.expm1
+
+    # wilcoxon rank sum statistic for each batch
+    params = None
+    for batch in batches:
+        adata_b = adata[adata.obs[batch_key] == batch].copy()
+        sc.tl.rank_genes_groups(
+            adata_b,
+            groupby=ct_key,
+            groups=groups,
+            reference=reference,
+            n_genes=adata_b.n_vars,
+            method="wilcoxon",
+            corr_method="benjamini-hochberg",
+            **kwargs # useraw and rankby_abs
+        )
+        params = adata_b.uns[key_added]["params"]
+        results_r = adata_b.uns[key_added]
+        if reference == "rest":
+            ref = list(adata_b.obs[ct_key].unique())
+        else:
+            ref = [reference]
+
+        # weight wilcoxon rank sum statistic
+        # for ct in results_r["names"].dtype.names:
+        for ct in celltypes:
+
+            # initialize df
+            if not batch in w_stats[ct]:
+                w_stats[ct][batch] = None
+
+            # handle cell types that don't appear in every batch
+            if ct not in results_r["names"].dtype.names:
+                w_stats[ct][batch] = np.nan
+                continue
+
+            # sample size of group (ct) for current stratum (batch)
+            n = adata_b[adata_b.obs[ct_key] == ct].shape[0]
+            # sample size of second group (rest) for current stratum (batch)
+            m_mask = adata_b.obs[ct_key].isin(ref)
+            m = m_mask.sum()
+            if ct in ref:
+                m = m - n
+            if  "weight" in kwargs and kwargs["weight"] == False:
+                weight = 1
+            else:
+                weight = float(m + n + 1) ** float(-1)
+            w_stats[ct][batch][results_r["names"][ct]] = results_r["scores"][ct]  * weight
+
+    # sum of weighted wilcoxon rank sum statistics
+    cols = ["names", "scores", "pvals", "pvals_adj", "logfoldchanges"]
+    # id1 = pd.Index(celltypes)
+    idx = pd.MultiIndex.from_product([list(celltypes), cols], names=["cell_type", "stats"])
+    results = pd.DataFrame(columns=idx, index=range(adata.shape[1]))
+    for ct in celltypes:
+        # TODO discuss:
+        #   is that enough for handling missing cell types
+        #   how to handle cell type hierarchy
+        #   don't we actually need the wilcoxon signed-rank?
+
+        # basic stats
+        ct_mask = adata.obs[ct_key] == ct
+        means_ct = np.ravel(np.mean(adata.X[ct_mask], axis=0, dtype=np.float64))
+        rest_mask = adata.obs[ct_key].isin(ref)
+        if ct in ref:
+            rest_mask[ct_mask] = False
+        means_rest = np.ravel(np.mean(adata.X[rest_mask], axis=0, dtype=np.float64))
+
+        # calculate scores and pvals
+        scores = list(w_stats[ct].sum(axis=1))
+        results[(ct, "scores")] = scores
+        if norm:
+            # normalize to account for missing celltypes (divide by number of batches that contain the cell type)
+            results[(ct, "scores")] /= w_stats[ct].shape[1]
+        pvals = np.array(2 * scipy.stats.distributions.norm.sf(results[ct]["scores"].abs()))
+        results[(ct, "pvals")] = pvals
+        results[(ct, "names")] = list(w_stats[ct].index)
+
+        # correct pvals
+        # TODO discuss
+        if params["corr_method"] == 'benjamini-hochberg':
+            pvals[np.isnan(pvals)] = 1
+            _, pvals_adj, _, _ = multipletests(
+                pvals, alpha=0.05, method='fdr_bh'
+            )
+        elif params["corr_method"] == 'bonferroni':
+            pvals_adj = np.minimum(pvals * adata.shape[1], 1.0)
+        results[(ct, "pvals_adj")] = pvals_adj
+
+        # calculate logfoldchanges
+        foldchanges = (expm1_func(means_ct.T) + 1e-9) / (expm1_func(means_rest.T) + 1e-9)
+        results[(ct, "logfoldchanges")] = np.log2(foldchanges)
+
+        # sort by score
+        tmp = results.loc[:,(ct,)].sort_values(by="scores", axis=0, ascending=False, inplace=False,
+                                               ignore_index=True).copy()
+        results[ct] = tmp
+
+    results = results.swaplevel(axis=1)
+
+
+    # conversion to recarray
+    dtypes = {
+        'names': 'O',
+        'scores': 'float64',
+        'logfoldchanges': 'float32',
+        'pvals': 'float64',
+        'pvals_adj': 'float64',
+    }
+    # params for each batch are the same, copy them here and modify method --> van_elteren
+    key_added_new = key_added + "_stratified"
+    adata.uns[key_added_new] = dict()
+    adata.uns[key_added_new]["params"] = params
+    adata.uns[key_added_new]["params"]["method"] = "van_elteren"
+    for key in cols:
+        adata.uns[key_added_new][key] = results[key].to_records(index=False, column_dtypes=dtypes[key])
+
+
+    return adata if copy else None
