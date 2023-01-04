@@ -1004,7 +1004,7 @@ def sample_cells(
             print(a.obs[key].cat.categories)
             print(a.obs[key].value_counts())
     else:
-        print(a.obs[obs_key].categories)
+        print(a.obs[obs_key].cat.categories)
         print(a.obs[obs_key].value_counts())
 
     if copy:
