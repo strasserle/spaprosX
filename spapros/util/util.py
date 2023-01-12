@@ -303,7 +303,7 @@ def cluster_corr(corr_array: Union[pd.DataFrame, np.ndarray]) -> Union[pd.DataFr
     """
     # check whether the correlation matrix contains nan columns (might be because the respective gene is not expressed)
     if pd.isna(corr_array).all(axis=0).any():
-        raise ValueError("The correlation matrix contains nan columns. Check wheter you removed unexpressed genes.")
+        raise ValueError("The correlation matrix contains nan columns. Check whether you removed unexpressed genes.")
 
     pairwise_distances = sch.distance.pdist(corr_array)
     linkage = sch.linkage(pairwise_distances, method="complete")
@@ -990,7 +990,7 @@ def sample_cells(
         if not all(keep_idx):
             if drop_unexpressed_genes:
                 a = a[:, keep_idx].copy()
-                print(f"After sampling cells in a celltype balanced manner, some genes were dropped from adata "
+                print(f"After sampling cells, {sum(~keep_idx)} genes were dropped from adata "
                       f"due to no remaining counts.")
             else:
                 warnings.warn(f"After sampling, {sum(~keep_idx)} genes have no remaining counts. Consider using "
