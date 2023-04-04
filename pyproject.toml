@@ -38,7 +38,6 @@ bandit = "1.7.2"
 venndata = "^0.1.0"
 Pillow = "9.0.0"
 UpSetPlot = "^0.6.0"
-sfaira = {git = "https://github.com/theislab/sfaira.git", rev = "dev"}
 
 [tool.poetry.dev-dependencies]
 pytest = "^6.2.4"

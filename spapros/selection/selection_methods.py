@@ -179,7 +179,7 @@ def select_pca_genes(
     if progress and 2 * verbosity >= level:
         pca_task = progress.add_task("Select pca genes...", total=1*len(batches), level=1)
 
-    scoresXbatch = pd.DataFrame(index=adata.var.index, columns=batches)
+    scoresXbatch = pd.DataFrame(index=a.var.index, columns=batches)
     for batch in batches:
         if batch_aware:
             a_batch = a[a.obs[batch_key]==batch].copy()
@@ -1854,8 +1854,10 @@ def van_elteren_test(adata, ct_key, batch_key, groups, reference, norm=False, co
         key_added = "rank_genes_groups"
 
     # for logfoldchange
-    if 'log1p' in adata.uns_keys() and adata.uns['log1p']['base'] is not None:
+    if 'log1p' in adata.uns_keys() and "base" in adata.uns["log1p"] and adata.uns['log1p']['base'] is not None:
         expm1_func = lambda x: np.expm1(x * np.log(adata.uns['log1p']['base']))
+    elif 'log1p' in adata.uns_keys() and "base" not in adata.uns["log1p"]:
+        expm1_func = lambda x: np.expm1(x * np.log(np.e))
     else:
         expm1_func = np.expm1
 

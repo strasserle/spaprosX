@@ -333,7 +333,7 @@ class ProbesetSelector:  # (object)
         celltype_key: str,
         batch_key: str = "batch",
         batch_aware: bool = True,
-        genes_key: str = "highly_variable",
+        genes_key: Optional[str] = "highly_variable",
         n: Optional[int] = None,
         preselected_genes: List[str] = [],
         prior_genes: List[str] = [],
@@ -2088,7 +2088,7 @@ class ProbesetSelector:  # (object)
 def select_reference_probesets(
     adata: sc.AnnData,
     n: int,
-    genes_key: str = "highly_variable",
+    genes_key: Optional[str] = "highly_variable",
     methods: Union[List[str], Dict[str, Dict]] = ["PCA", "PCAX", "DE", "DEX", "HVG", "random"],
     seeds: List[int] = [0],
     verbosity: int = 2,
@@ -2201,8 +2201,13 @@ def select_reference_probesets(
             if verbosity > 1:
                 sel_task = progress.add_task(f"Selecting {s['name']} genes...", total=1, level=2)
 
+            if genes_key is not None:
+                a = adata[:, adata.var[genes_key]]
+            else:
+                a = adata.copy()
+
             probesets[s["name"]] = selection_fcts[s["method"]](
-                adata[:, adata.var[genes_key]], n, inplace=False, **s["params"]
+                a, n, inplace=False, **s["params"]
             )
 
             if save_dir:

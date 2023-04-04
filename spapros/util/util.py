@@ -303,7 +303,7 @@ def cluster_corr(corr_array: Union[pd.DataFrame, np.ndarray]) -> Union[pd.DataFr
     """
     # check whether the correlation matrix contains nan columns (might be because the respective gene is not expressed)
     if pd.isna(corr_array).all(axis=0).any():
-        raise ValueError("The correlation matrix contains nan columns. Check wheter you removed unexpressed genes.")
+        raise ValueError("The correlation matrix contains nan columns. Check whether you removed unexpressed genes.")
 
     pairwise_distances = sch.distance.pdist(corr_array)
     linkage = sch.linkage(pairwise_distances, method="complete")
@@ -840,6 +840,7 @@ def sample_cells(
         drop_rare_groups: bool = False,
         rare_group_th: Optional[int] = None,
         copy: bool = False,
+        verbosity=2,
 ) -> sc.AnnData:
     """Randomly sample cells from dataset.
 
@@ -990,20 +991,26 @@ def sample_cells(
         if not all(keep_idx):
             if drop_unexpressed_genes:
                 a = a[:, keep_idx].copy()
-                print(f"After sampling cells in a celltype balanced manner, some genes were dropped from adata "
-                      f"due to no remaining counts.")
+                if verbosity > 0:
+                    print(f"After sampling cells, {sum(~keep_idx)} genes were dropped from adata "
+                          f"due to no remaining counts.")
             else:
-                warnings.warn(f"After sampling, {sum(~keep_idx)} genes have no remaining counts. Consider using "
-                              f"'drop_unexpressed_genes=True'.")
+                if verbosity > 0:
+                    warnings.warn(f"After sampling, {sum(~keep_idx)} genes have no remaining counts. Consider using "
+                                  f"'drop_unexpressed_genes=True'.")
     else:
         a = a[random.sample(range(a.n_obs), n_out),:]
 
-    print(a.obs[obs_key].value_counts())
-    if isinstance(obs_key, list):
-        for key in obs_key:
-            print(a.obs[key].cat.categories)
-    else:
-        print(a.obs[obs_key].categories)
+
+    if verbosity > 1:
+        if  isinstance(obs_key, list):
+            for key in obs_key:
+                print(a.obs[key].cat.categories)
+                print(a.obs[key].value_counts())
+        else:
+            print(a.obs[obs_key].cat.categories)
+            print(a.obs[obs_key].value_counts())
+
     if copy:
         return a
 
@@ -1017,4 +1024,4 @@ def cell_type_intersect(adata, ct_key, batch_key):
     celltypes = [set(adata.obs[ct_key][adata.obs[batch_key] == batch]) for batch in batches]
     ct_intersection = set.intersection(*celltypes)
 
-    return adata[adata.obs[ct_key].isin(ct_intersection)]
+    return adata[adata.obs[ct_key].isin(ct_intersection)].copy()

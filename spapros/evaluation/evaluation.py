@@ -375,7 +375,7 @@ class ProbesetEvaluator:
 
         if self.progress and self.verbosity > 0:
             evaluation_task = self.progress.add_task(
-                description="SPAPROS PROBESET EVALUATION:", only_text=True, header=True, total=0
+                description=f"SPAPROS PROBESET EVALUATION: {set_id}", only_text=True, header=True, total=0
             )
 
         if not pre_only:
@@ -447,6 +447,7 @@ class ProbesetEvaluator:
                         progress=self.progress if self.verbosity > 1 else None,
                         level=2,
                         verbosity=self.verbosity,
+                        set_id=set_id
                     )
                     if self.dir:
                         Path(os.path.dirname(self._res_file(metric, set_id))).mkdir(parents=True, exist_ok=True)
@@ -521,6 +522,7 @@ class ProbesetEvaluator:
                 pre_results=self.pre_results[metric][set_id],
                 parameters=self.metrics_params[metric],
                 n_jobs=self.n_jobs,
+                set_id=set_id,
             )
             if self.dir:
                 Path(os.path.dirname(self._res_file(metric, set_id))).mkdir(parents=True, exist_ok=True)
@@ -608,16 +610,19 @@ class ProbesetEvaluator:
                 User specified parameters for the calculation of the metrics.
         """
         params = get_metric_default_parameters()
+        if self.marker_list is not None:
+            params["marker_corr"]["marker_list"] = self.marker_list
+        if self.celltype_key is not None:
+            params["forest_clfs"]["ct_key"] = self.celltype_key
+            params["knn_overlap_weighted"]["weight_key"] = self.celltype_key
+            params["knn_overlap_weighted_X"]["weight_key"] = self.celltype_key
+
         params = self._stratify_default_parameters(params)
         for metric in params:
             if metric in new_params:
                 for param in params[metric]:
                     if param in new_params[metric]:
                         params[metric][param] = new_params[metric][param]
-        if self.marker_list is not None:
-            params["marker_corr"]["marker_list"] = self.marker_list
-        if self.celltype_key is not None:
-            params["forest_clfs"]["ct_key"] = self.celltype_key
         return params
 
 
@@ -634,7 +639,7 @@ class ProbesetEvaluator:
         """
         new_params = {}
         for metric in old_params:
-            # all bath aware metrics are given a name ending on _X
+            # all batch aware metrics are given a name ending on _X
             if metric.endswith("_X"):
                 # self.batch_keys in adata.obs already checked in init
                 for batch_key in self.batch_keys:
@@ -654,7 +659,7 @@ class ProbesetEvaluator:
 
         if self.scheme == "batch_aware" or self.scheme == "full":
             # add batch aware metrics if scheme not quick and batch key in adata.obs
-            batch_aware_metrics = ["knn_overlap_X"]
+            batch_aware_metrics = ["knn_overlap_X", "knn_overlap_weighted_X"]
             batch_aware_metrics_stratified = list(self._stratify_default_parameters({b: {} for b in
                                                                                   batch_aware_metrics}).keys())
 
@@ -667,7 +672,11 @@ class ProbesetEvaluator:
         if self.scheme == "quick":
             metrics = ["knn_overlap", "forest_clfs", "gene_corr"]
         if self.scheme == "full":
-            metrics = ["cluster_similarity", "knn_overlap", "forest_clfs", "gene_corr"] + batch_aware_metrics_stratified
+            metrics = ["cluster_similarity",
+                       "knn_overlap",
+                       "knn_overlap_weighted",
+                       "forest_clfs",
+                       "gene_corr"] + batch_aware_metrics_stratified
 
 
         # Add marker correlation metric if a marker list is provided
