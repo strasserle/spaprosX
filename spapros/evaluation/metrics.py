@@ -827,9 +827,6 @@ def knns(
         genes = adata.var_names
     adata_tmp = adata[:, genes].copy()
 
-    # Set n_pcs to 50 or number of genes if < 50
-    n_pcs = np.min([50, len(genes) - 1])
-
     # subset data into batches
     df = pd.DataFrame(index=adata_tmp.obs_names, columns=[f"k{k}_{i}" for k in ks for i in range(k-1)])
     if weight_key is not None and weight_key in adata.obs:
@@ -843,7 +840,9 @@ def knns(
         batches = ["no_batching"]
     if progress:
         task_knn = progress.add_task(description, level=level, total=len(ks) * len(batches))
+
     for batch in batches:
+
         if not batch == "no_batching":
             batch_mask = adata_tmp.obs[batch_key] == batch
         else:
@@ -863,6 +862,12 @@ def knns(
         obsp = [key for key in a.obsp]
         for o in obsp:
             del a.obsp[o]
+
+        # Set n_pcs to 50 or number of genes if < 50
+        n_pcs = np.min([50, a.shape[1] - 1])
+        print("n_pcs: ", n_pcs)
+        print("a.shape: ", a.shape)
+
         sc.tl.pca(a, n_comps=n_pcs)  # use_highly_variable=False
 
         # Get nearest neighbors for each k

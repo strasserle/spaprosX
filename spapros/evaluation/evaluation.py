@@ -237,6 +237,7 @@ class ProbesetEvaluator:
             Verbosity level.
         n_jobs:
             Number of CPUs for multi processing computations. Set to `-1` to use all available CPUs.
+        verbosity:
             Verbosity level.
         shared_results:
             Results of shared metric computations.
