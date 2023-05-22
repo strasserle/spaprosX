@@ -1812,10 +1812,8 @@ def select_selfE_features(adata: sc.AnnData, n: int, inplace: bool = True, verbo
 ############################ batch-aware methods##################################
 ##################################################################################
 
-def van_elteren_test(adata, ct_key, batch_key, groups, reference, norm=False, copy=False, **kwargs):
+def van_elteren_test(adata, ct_key, batch_key, groups, reference, norm=True, weight=True, copy=False, **kwargs):
     """Stratified DE test.
-
-    TODO handle missing cell types
 
     Args:
         adata:
@@ -1829,133 +1827,255 @@ def van_elteren_test(adata, ct_key, batch_key, groups, reference, norm=False, co
         reference:
             See sc.tl.rank_genes_groups().
         norm:
-            Divide test statistic score by number of batches for each cell type to compensate rare celltypes.
+            Normalize the test statistic score for each cell type to compensate rare celltypes.
+        weight:
+            Weight the test statistic score for each batch-cell-type-pair with weight = 1/(n+m+1), where n is the
+            number of cells for the current batch-cell-type-pair and m is the number :attr:`reference` cells.
         copy:
-            If True, return DataFrame, otherwise results are stored in `adata.obs[key_added]` .
+            If True, return DataFrame, otherwise results are stored in `adata.obs[key_added]`.
         **kwargs:
             Further arguments for `sc.rank_genes_groups()`
 
     Returns:
 
     """
-    adata = adata.copy() if copy else adata
-    batches = list(adata.obs[batch_key].unique())
-    celltypes = adata.obs[ct_key].cat.categories if groups == "all" else list(set(groups))
+    a = adata.copy()
+    tmp_key = "tmp_key"
+    if tmp_key in a.uns:
+        del a.uns[tmp_key]
+    batches = list(a.obs[batch_key].unique())
+    if a.obs[ct_key].dtype.name == "category":
+        a.obs[ct_key] = a.obs[ct_key].cat.remove_unused_categories()
+    else:
+        a.obs[ct_key] = a.obs[ct_key].astype("category")
+    all_celltypes = list(a.obs[ct_key].cat.categories)
+    if reference == "rest":
+        # sc.rank_genes_groups will exclude the target cell type from the rest
+        celltypes = all_celltypes if groups == "all" else list(set(groups))
+        reference_list = all_celltypes
+    else:
+        # sc.rank_genes_groups only gets one ct as reference --> we need to exclude it
+        celltypes = [x for x in all_celltypes if x != reference] if groups == "all"  else list(set(groups))
+        reference_list = [reference]
 
     # initialize output dataframes
     w_stats = {}
     for ct in celltypes:
-        w_stats[ct] = pd.DataFrame(index=adata.var_names)
+        w_stats[ct] = pd.DataFrame(index=a.var_names)
 
     # target obs key
     if "key_added" in kwargs:
         key_added = kwargs["key_added"]
+        kwargs["key_added"] = tmp_key
     else:
-        key_added = "rank_genes_groups"
+        key_added = "rank_genes_groups_stratified"
+        kwargs["key_added"] = tmp_key
 
     # for logfoldchange
-    if 'log1p' in adata.uns_keys() and "base" in adata.uns["log1p"] and adata.uns['log1p']['base'] is not None:
-        expm1_func = lambda x: np.expm1(x * np.log(adata.uns['log1p']['base']))
-    elif 'log1p' in adata.uns_keys() and "base" not in adata.uns["log1p"]:
-        expm1_func = lambda x: np.expm1(x * np.log(np.e))
+    if 'log1p' in a.uns_keys() and "base" in a.uns["log1p"] and a.uns['log1p']['base'] is not None:
+        expm1_func = lambda x: np.expm1(x * np.log(a.uns['log1p']['base']))
     else:
         expm1_func = np.expm1
 
     # wilcoxon rank sum statistic for each batch
     params = None
+    target_to_ref_map = {}
     for batch in batches:
-        adata_b = adata[adata.obs[batch_key] == batch].copy()
+        adata_b = a[a.obs[batch_key] == batch].copy()
+        # remove cell types that are missing/rare (i.e. <= 1 cell per cell type)
+        sc.pp.filter_cells(adata_b, min_counts=1)
+        counts = adata_b.obs[ct_key].value_counts()
+        rare_cts = counts[counts == 1].index.values.tolist()
+        missing_cts = [x for x in adata_b.obs[ct_key].cat.categories if x not in counts.index.values]
+        adata_b = adata_b[~adata_b.obs[ct_key].isin(rare_cts + missing_cts)]
+        adata_b.obs[ct_key] = adata_b.obs[ct_key].cat.remove_unused_categories()
+        groups_b = [x for x in celltypes if x in adata_b.obs[ct_key].cat.categories]
+        if reference == "rest":
+            reference_b = "rest"
+            ref_list_b = [x for x in adata_b.obs[ct_key].cat.categories]
+        elif reference in adata_b.obs[ct_key].cat.categories:
+            reference_b = reference
+            ref_list_b = [reference_b]
+        else:
+            # reference is a ct that does not appear in the current batch --> go in next if and skip
+            reference_b = None
+            ref_list_b = []
+        # cases where no DE test is possible
+        if len(groups_b) == 0 or len(ref_list_b) == 0 or adata_b.n_obs == 0 or adata_b.n_vars == 0 or (groups_b == ref_list_b and len(ref_list_b) == 1):
+            for ct in celltypes:
+               w_stats[ct][batch] = np.nan
+            continue
+        # need to check if any ct is missed as reference (missed for group can be checked in w_scores)
+        for ct in groups_b:
+            if ct not in target_to_ref_map:
+                target_to_ref_map[ct] = []
+            target_to_ref_map[ct] = target_to_ref_map[ct] + [x for x in ref_list_b if (x != ct and x not in target_to_ref_map[ct])]
+        print("groups_b: ", groups_b)
+        print("reference_b: ", reference_b)
+        print("ref_list_b: ", ref_list_b)
+        if tmp_key in a.uns:
+            del a.uns[tmp_key]
         sc.tl.rank_genes_groups(
             adata_b,
             groupby=ct_key,
-            groups=groups,
-            reference=reference,
+            groups=groups_b,
+            reference=reference_b,
             n_genes=adata_b.n_vars,
             method="wilcoxon",
             corr_method="benjamini-hochberg",
-            **kwargs # useraw and rankby_abs
+            **kwargs # useraw and rankby_abs, key_added=tmp_key
         )
-        params = adata_b.uns[key_added]["params"]
-        results_r = adata_b.uns[key_added]
-        if reference == "rest":
-            ref = list(adata_b.obs[ct_key].unique())
-        else:
-            ref = [reference]
+        params = adata_b.uns[tmp_key]["params"]
+        results_r = adata_b.uns[tmp_key]
 
         # weight wilcoxon rank sum statistic
-        # for ct in results_r["names"].dtype.names:
         for ct in celltypes:
-
             # initialize df
             if not batch in w_stats[ct]:
                 w_stats[ct][batch] = None
-
             # handle cell types that don't appear in every batch
             if ct not in results_r["names"].dtype.names:
                 w_stats[ct][batch] = np.nan
                 continue
-
             # sample size of group (ct) for current stratum (batch)
             n = adata_b[adata_b.obs[ct_key] == ct].shape[0]
             # sample size of second group (rest) for current stratum (batch)
-            m_mask = adata_b.obs[ct_key].isin(ref)
+            m_mask = adata_b.obs[ct_key].isin([x for x in ref_list_b if x != ct])
             m = m_mask.sum()
-            if ct in ref:
+            if ct in ref_list_b:
                 m = m - n
-            if  "weight" in kwargs and kwargs["weight"] == False:
+            if not weight or len(batches) == 1:
                 weight = 1
             else:
                 weight = float(m + n + 1) ** float(-1)
             w_stats[ct][batch][results_r["names"][ct]] = results_r["scores"][ct]  * weight
+        del adata_b
+
+    ########################################
+    # TODO
+    # find all cell type - reference - pairs for that could not be compared in any batch
+    # do normal DE test for them
+    # merge ranks
+    # --> any cell type never in group ?
+    # --> any cell type never in ref ?
 
     # sum of weighted wilcoxon rank sum statistics
-    cols = ["names", "scores", "pvals", "pvals_adj", "logfoldchanges"]
-    # id1 = pd.Index(celltypes)
+    cols = ["names", "scores", "pvals", "pvals_adj", "logfoldchanges", "n_batches"]
     idx = pd.MultiIndex.from_product([list(celltypes), cols], names=["cell_type", "stats"])
-    results = pd.DataFrame(columns=idx, index=range(adata.shape[1]))
+
+    # check for lost cell types --> add non-batch-aware DE test
+    # case 2: cell type lost as reference --> merge with normal DE test
+    # cts_missed_as_ref = [x for x in reference_list if x not in [y for z in target_to_ref_map.values() for y in z]]
+    cts_missed_as_ref = []
+    cts_missed_as_target = []
+    for t in target_to_ref_map:
+        # we check for each target separetely, if any reference is missing. But we do one joint DE test for all missed reference cts.
+        r_list = target_to_ref_map[t]
+        missed = [x for x in reference_list if (x not in r_list and x != t)]
+        if len(missed) > 0:
+            cts_missed_as_target.append(t)
+        cts_missed_as_ref = cts_missed_as_ref + missed
+    results_n = pd.DataFrame(columns=idx, index=range(a.shape[1]))
+    if len(cts_missed_as_ref) > 0:
+        print("case 2")
+        if tmp_key in a.uns:
+            del a.uns[tmp_key]
+        # target_list = all_celltypes if groups == "all" else list(set(groups))
+        results_to_merge = sc.tl.rank_genes_groups(
+            a[a.obs[ct_key].isin(cts_missed_as_target + cts_missed_as_ref)],
+            groupby=ct_key,
+            groups=cts_missed_as_target, # groups
+            reference="rest",
+            n_genes=a.n_vars,
+            method="wilcoxon",
+            corr_method="benjamini-hochberg",
+            copy=True,
+            **kwargs  # useraw and rankby_abs, key_added=tmp_key
+        ).uns[tmp_key]
+        for ct in cts_missed_as_target:  # celltypes:
+            w_stats_normal = pd.DataFrame(columns=["non-batch-aware score"], index=a.var_names)
+            w_stats_normal["non-batch-aware score"][results_to_merge["names"][ct]] = results_to_merge["scores"][ct]
+            scores_n, pvals_n, names_n, pvals_adj_n, foldchanges_n, n_batches_n = _agg_DE_test_scores_over_batches(a, ct_key, ct, cts_missed_as_ref, w_stats_normal, False, expm1_func, batches, params)
+            # results_n = pd.DataFrame({"scores": scores_n, "pvals": pvals_n, "names": names_n, "pvals_adj": pvals_adj_n, "logfoldchanges": foldchanges_n, "n_batches": "non-batch-aware_case-2"})
+            results_n[(ct, "scores")] = scores_n
+            results_n[(ct, "pvals")] = pvals_n
+            results_n[(ct, "names")] = names_n
+            results_n[(ct, "pvals_adj")] = pvals_adj_n
+            results_n[(ct, "logfoldchanges")] = foldchanges_n
+            results_n[(ct, "n_batches")] = "non-batch-aware_case-2"
+            # sort by score
+            tmp = results_n.loc[:,(ct,)].sort_values(by="scores", axis=0, ascending=False, inplace=False,
+                                                    ignore_index=True).copy()
+            results_n[ct] = tmp
+
+    results = pd.DataFrame(columns=idx, index=range(a.shape[1]))
     for ct in celltypes:
         # TODO discuss:
         #   is that enough for handling missing cell types
         #   how to handle cell type hierarchy
         #   don't we actually need the wilcoxon signed-rank?
 
-        # basic stats
-        ct_mask = adata.obs[ct_key] == ct
-        means_ct = np.ravel(np.mean(adata.X[ct_mask], axis=0, dtype=np.float64))
-        rest_mask = adata.obs[ct_key].isin(ref)
-        if ct in ref:
-            rest_mask[ct_mask] = False
-        means_rest = np.ravel(np.mean(adata.X[rest_mask], axis=0, dtype=np.float64))
-
-        # calculate scores and pvals
-        scores = list(w_stats[ct].sum(axis=1))
-        results[(ct, "scores")] = scores
-        if norm:
-            # normalize to account for missing celltypes (divide by number of batches that contain the cell type)
-            results[(ct, "scores")] /= w_stats[ct].shape[1]
-        pvals = np.array(2 * scipy.stats.distributions.norm.sf(results[ct]["scores"].abs()))
-        results[(ct, "pvals")] = pvals
-        results[(ct, "names")] = list(w_stats[ct].index)
-
-        # correct pvals
-        # TODO discuss
-        if params["corr_method"] == 'benjamini-hochberg':
-            pvals[np.isnan(pvals)] = 1
-            _, pvals_adj, _, _ = multipletests(
-                pvals, alpha=0.05, method='fdr_bh'
+        # check for lost cell types --> add non-batch-aware DE test
+        # case 1: cell type lost as group (target cell type) --> replace with normal DE test
+        if w_stats[ct].isna().all(axis=0).all():
+            print("case 1")
+            if tmp_key in a.uns:
+                del a.uns[tmp_key]
+            sc.tl.rank_genes_groups(
+                a,
+                groupby=ct_key,
+                groups=[ct],
+                reference=reference,
+                n_genes=a.n_vars,
+                method="wilcoxon",
+                corr_method="benjamini-hochberg",
+                **kwargs  # useraw and rankby_abs, key_added=tmp_key
             )
-        elif params["corr_method"] == 'bonferroni':
-            pvals_adj = np.minimum(pvals * adata.shape[1], 1.0)
+            results_normal = a.uns[tmp_key]
+            w_stats[ct] = pd.DataFrame(columns=["non-batch-aware score"], index=a.var_names) # replace the df full of nans
+            w_stats[ct]["non-batch-aware score"][results_normal["names"][ct]] = results_normal["scores"][ct]
+            assert ct not in target_to_ref_map
+            target_to_ref_map[ct] = [x for x in reference_list if x != ct]
+
+        scores, pvals, names, pvals_adj, foldchanges, n_batches = _agg_DE_test_scores_over_batches(a, ct_key, ct,
+                                                                                                 reference_list,
+                                                                                                 w_stats[ct], norm,
+                                                                                                 expm1_func, batches,
+                                                                                                 params)
+        results[(ct, "scores")] = scores
+        results[(ct, "pvals")] = pvals
+        results[(ct, "names")] = names
         results[(ct, "pvals_adj")] = pvals_adj
-
-        # calculate logfoldchanges
-        foldchanges = (expm1_func(means_ct.T) + 1e-9) / (expm1_func(means_rest.T) + 1e-9)
-        results[(ct, "logfoldchanges")] = np.log2(foldchanges)
-
+        results[(ct, "logfoldchanges")] = foldchanges
+        results[(ct, "n_batches")] = n_batches
         # sort by score
         tmp = results.loc[:,(ct,)].sort_values(by="scores", axis=0, ascending=False, inplace=False,
                                                ignore_index=True).copy()
         results[ct] = tmp
+
+        # merge normal and batch aware DE test if ct was lost as reference
+        if len(cts_missed_as_ref) > 0 and ct in cts_missed_as_target:
+            print("merge")
+            results_b_ct = results[ct].copy()
+            results_n_ct = results_n[ct].copy()
+            results_ct = pd.DataFrame(columns=cols, index=range(a.shape[1]))
+            for i in range(0, len(results) - 1, 2):
+                # get the entry of the currently highest batch-aware ranked gene
+                results_ct.iloc[i] = results_b_ct.iloc[0]
+                name = results_b_ct.iloc[0]["names"]
+                # delete the gene from both the batch-aware ranking and the normal ranking
+                results_b_ct = results_b_ct.iloc[1:].copy()
+                results_n_ct = results_n_ct[~(results_n_ct["names"] == name)]
+                # repeat with the first gene in the non-batch-aware ranking
+                results_ct.iloc[i+1] = results_n_ct.iloc[0]
+                name = results_n_ct.iloc[0]["names"]
+                # delete the gene from both the batch-aware ranking and the normal ranking
+                results_n_ct = results_n_ct.iloc[1:].copy()
+                results_b_ct = results_b_ct[~(results_b_ct["names"] == name)]
+            # if number of genes uneven, last one is left
+            if len(results_b_ct) > 0:
+                results_ct.iloc[-1, :] = results_n_ct.iloc[0]
+            results[ct] = results_ct
 
     results = results.swaplevel(axis=1)
 
@@ -1963,18 +2083,65 @@ def van_elteren_test(adata, ct_key, batch_key, groups, reference, norm=False, co
     # conversion to recarray
     dtypes = {
         'names': 'O',
-        'scores': 'float64',
+        'scores': 'float32',
         'logfoldchanges': 'float32',
         'pvals': 'float64',
         'pvals_adj': 'float64',
+        'n_batches': 'O'
     }
+
     # params for each batch are the same, copy them here and modify method --> van_elteren
-    key_added_new = key_added + "_stratified"
-    adata.uns[key_added_new] = dict()
-    adata.uns[key_added_new]["params"] = params
-    adata.uns[key_added_new]["params"]["method"] = "van_elteren"
-    for key in cols:
-        adata.uns[key_added_new][key] = results[key].to_records(index=False, column_dtypes=dtypes[key])
+    if not copy:
+        adata.uns[key_added] = dict()
+        adata.uns[key_added]["params"] = params
+        adata.uns[key_added]["params"]["method"] = "van_elteren"
+        for key in cols:
+            adata.uns[key_added][key] = results[key].to_records(index=False, column_dtypes=dtypes[key])
+    else:
+        if tmp_key in a.uns:
+            del a.uns[tmp_key]
+        a.uns[key_added] = dict()
+        a.uns[key_added]["params"] = params
+        a.uns[key_added]["params"]["method"] = "van_elteren"
+        for key in cols:
+            a.uns[key_added][key] = results[key].to_records(index=False, column_dtypes=dtypes[key])
+
+    print(target_to_ref_map)
+    return a if copy else None
 
 
-    return adata if copy else None
+def _agg_DE_test_scores_over_batches(adata, ct_key, ct, ref_list, w_stats_ct, norm, expm1_func, batches, params):
+
+    # basic stats
+    ct_mask = adata.obs[ct_key] == ct
+    means_ct = np.ravel(np.mean(adata.X[ct_mask], axis=0, dtype=np.float64))
+    rest_mask = adata.obs[ct_key].isin(ref_list)
+    if ct in ref_list:
+        rest_mask[ct_mask] = False
+    means_rest = np.ravel(np.mean(adata.X[rest_mask], axis=0, dtype=np.float64))
+
+    # calculate scores and pvals
+    scores = np.array(w_stats_ct.sum(axis=1))
+    # normalize to account for missing celltypes
+    n_batches_in_ct = w_stats_ct.dropna(axis=1).shape[1]
+    n_batches_total = len(batches)
+    if norm:
+        scores = scores / n_batches_in_ct * n_batches_total
+    pvals = np.array(2 * scipy.stats.distributions.norm.sf(np.abs(scores)))
+    names = list(w_stats_ct.index)
+
+    # correct pvals
+    if params["corr_method"] == 'benjamini-hochberg':
+        pvals[np.isnan(pvals)] = 1
+        _, pvals_adj, _, _ = multipletests(
+            pvals, alpha=0.05, method='fdr_bh'
+        )
+    elif params["corr_method"] == 'bonferroni':
+        pvals_adj = np.minimum(pvals * adata.shape[1], 1.0)
+
+    # calculate logfoldchanges
+    logfoldchanges = np.log2((expm1_func(means_ct.T) + 1e-9) / (expm1_func(means_rest.T) + 1e-9))
+
+    n_batches =  n_batches_in_ct if "non-batch-aware score" not in w_stats_ct.columns else "non-batch-aware_case-1"
+
+    return scores, pvals, names, pvals_adj, logfoldchanges, n_batches

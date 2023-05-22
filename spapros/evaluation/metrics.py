@@ -865,8 +865,6 @@ def knns(
 
         # Set n_pcs to 50 or number of genes if < 50
         n_pcs = np.min([50, a.shape[1] - 1])
-        print("n_pcs: ", n_pcs)
-        print("a.shape: ", a.shape)
 
         sc.tl.pca(a, n_comps=n_pcs)  # use_highly_variable=False
 
@@ -1194,7 +1192,7 @@ def xgboost_forest_classification(
             sample_weight_train = compute_sample_weight("balanced", train_y)
             sample_weight_test = compute_sample_weight("balanced", test_y)
             # Fit the classifier
-            # n_classes = len(np.unique(train_y))
+            n_classes = len(np.unique(train_y))
             clf = XGBClassifier(
                 max_depth=max_depth,
                 num_class=n_classes if n_classes > 2 else None,
