@@ -1887,7 +1887,7 @@ def van_elteren_test(adata, ct_key, batch_key, groups, reference, norm=True, wei
         counts = adata_b.obs[ct_key].value_counts()
         rare_cts = counts[counts == 1].index.values.tolist()
         missing_cts = [x for x in adata_b.obs[ct_key].cat.categories if x not in counts.index.values]
-        adata_b = adata_b[~adata_b.obs[ct_key].isin(rare_cts + missing_cts)]
+        adata_b = adata_b[~adata_b.obs[ct_key].isin(rare_cts + missing_cts)].copy()
         adata_b.obs[ct_key] = adata_b.obs[ct_key].cat.remove_unused_categories()
         groups_b = [x for x in celltypes if x in adata_b.obs[ct_key].cat.categories]
         if reference == "rest":
@@ -1910,9 +1910,9 @@ def van_elteren_test(adata, ct_key, batch_key, groups, reference, norm=True, wei
             if ct not in target_to_ref_map:
                 target_to_ref_map[ct] = []
             target_to_ref_map[ct] = target_to_ref_map[ct] + [x for x in ref_list_b if (x != ct and x not in target_to_ref_map[ct])]
-        print("groups_b: ", groups_b)
-        print("reference_b: ", reference_b)
-        print("ref_list_b: ", ref_list_b)
+        # print("groups_b: ", groups_b)
+        # print("reference_b: ", reference_b)
+        # print("ref_list_b: ", ref_list_b)
         if tmp_key in a.uns:
             del a.uns[tmp_key]
         sc.tl.rank_genes_groups(
@@ -1977,7 +1977,6 @@ def van_elteren_test(adata, ct_key, batch_key, groups, reference, norm=True, wei
         cts_missed_as_ref = cts_missed_as_ref + missed
     results_n = pd.DataFrame(columns=idx, index=range(a.shape[1]))
     if len(cts_missed_as_ref) > 0:
-        print("case 2")
         if tmp_key in a.uns:
             del a.uns[tmp_key]
         # target_list = all_celltypes if groups == "all" else list(set(groups))
@@ -2016,9 +2015,9 @@ def van_elteren_test(adata, ct_key, batch_key, groups, reference, norm=True, wei
         #   don't we actually need the wilcoxon signed-rank?
 
         # check for lost cell types --> add non-batch-aware DE test
-        # case 1: cell type lost as group (target cell type) --> replace with normal DE test
-        if w_stats[ct].isna().all(axis=0).all():
-            print("case 1")
+        # case 1: cell type lost as group (target cell type) / only in one batch --> replace with normal DE test
+        n_batches_in_ct = w_stats[ct].dropna(axis=1).shape[1]
+        if  n_batches_in_ct < 2:
             if tmp_key in a.uns:
                 del a.uns[tmp_key]
             sc.tl.rank_genes_groups(
@@ -2031,17 +2030,17 @@ def van_elteren_test(adata, ct_key, batch_key, groups, reference, norm=True, wei
                 corr_method="benjamini-hochberg",
                 **kwargs  # useraw and rankby_abs, key_added=tmp_key
             )
+            params = a.uns[tmp_key]["params"]
             results_normal = a.uns[tmp_key]
             w_stats[ct] = pd.DataFrame(columns=["non-batch-aware score"], index=a.var_names) # replace the df full of nans
             w_stats[ct]["non-batch-aware score"][results_normal["names"][ct]] = results_normal["scores"][ct]
-            assert ct not in target_to_ref_map
             target_to_ref_map[ct] = [x for x in reference_list if x != ct]
 
         scores, pvals, names, pvals_adj, foldchanges, n_batches = _agg_DE_test_scores_over_batches(a, ct_key, ct,
                                                                                                  reference_list,
                                                                                                  w_stats[ct], norm,
                                                                                                  expm1_func, batches,
-                                                                                                 params)
+                                                                                                 params, reason=n_batches_in_ct)
         results[(ct, "scores")] = scores
         results[(ct, "pvals")] = pvals
         results[(ct, "names")] = names
@@ -2053,9 +2052,18 @@ def van_elteren_test(adata, ct_key, batch_key, groups, reference, norm=True, wei
                                                ignore_index=True).copy()
         results[ct] = tmp
 
+        # update lists of missed cell types
+        cts_missed_as_ref = []
+        cts_missed_as_target = []
+        for t in target_to_ref_map:
+            # we check for each target separetely, if any reference is missing. But we do one joint DE test for all missed reference cts.
+            r_list = target_to_ref_map[t]
+            missed = [x for x in reference_list if (x not in r_list and x != t)]
+            if len(missed) > 0:
+                cts_missed_as_target.append(t)
+            cts_missed_as_ref = cts_missed_as_ref + missed
         # merge normal and batch aware DE test if ct was lost as reference
         if len(cts_missed_as_ref) > 0 and ct in cts_missed_as_target:
-            print("merge")
             results_b_ct = results[ct].copy()
             results_n_ct = results_n[ct].copy()
             results_ct = pd.DataFrame(columns=cols, index=range(a.shape[1]))
@@ -2077,8 +2085,15 @@ def van_elteren_test(adata, ct_key, batch_key, groups, reference, norm=True, wei
                 results_ct.iloc[-1, :] = results_n_ct.iloc[0]
             results[ct] = results_ct
 
-    results = results.swaplevel(axis=1)
+        dev = results[ct]["n_batches"].value_counts()
+        print(f"DEX_CT:{ct}")
+        print(f"DEX_INFO:{reference}-{reference_list}-{groups}-{all_celltypes}")
+        if len(dev) == 1:
+            print(f"DEX_COUNT:{dev.index[0]}")
+        else:
+            print(f"DEX_COUNT:{'MERGED'.join([str(x) for x in dev.index])}")
 
+    results = results.swaplevel(axis=1)
 
     # conversion to recarray
     dtypes = {
@@ -2106,11 +2121,10 @@ def van_elteren_test(adata, ct_key, batch_key, groups, reference, norm=True, wei
         for key in cols:
             a.uns[key_added][key] = results[key].to_records(index=False, column_dtypes=dtypes[key])
 
-    print(target_to_ref_map)
     return a if copy else None
 
 
-def _agg_DE_test_scores_over_batches(adata, ct_key, ct, ref_list, w_stats_ct, norm, expm1_func, batches, params):
+def _agg_DE_test_scores_over_batches(adata, ct_key, ct, ref_list, w_stats_ct, norm, expm1_func, batches, params, reason=None):
 
     # basic stats
     ct_mask = adata.obs[ct_key] == ct
@@ -2131,17 +2145,18 @@ def _agg_DE_test_scores_over_batches(adata, ct_key, ct, ref_list, w_stats_ct, no
     names = list(w_stats_ct.index)
 
     # correct pvals
-    if params["corr_method"] == 'benjamini-hochberg':
-        pvals[np.isnan(pvals)] = 1
-        _, pvals_adj, _, _ = multipletests(
-            pvals, alpha=0.05, method='fdr_bh'
-        )
-    elif params["corr_method"] == 'bonferroni':
-        pvals_adj = np.minimum(pvals * adata.shape[1], 1.0)
+    if params is not None and "corr_method" in params:
+        if params["corr_method"] == 'benjamini-hochberg':
+            pvals[np.isnan(pvals)] = 1
+            _, pvals_adj, _, _ = multipletests(
+                pvals, alpha=0.05, method='fdr_bh'
+            )
+        elif params["corr_method"] == 'bonferroni':
+            pvals_adj = np.minimum(pvals * adata.shape[1], 1.0)
 
     # calculate logfoldchanges
     logfoldchanges = np.log2((expm1_func(means_ct.T) + 1e-9) / (expm1_func(means_rest.T) + 1e-9))
 
-    n_batches =  n_batches_in_ct if "non-batch-aware score" not in w_stats_ct.columns else "non-batch-aware_case-1"
+    n_batches =  n_batches_in_ct if "non-batch-aware score" not in w_stats_ct.columns else f"non-batch-aware_case-1({reason})"
 
     return scores, pvals, names, pvals_adj, logfoldchanges, n_batches
