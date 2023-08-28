@@ -1,12 +1,10 @@
 """Global fixtures for testing."""
 import random
-
 import numpy as np
 import pandas as pd
 import pytest
 import scanpy as sc
-from spapros import ev
-from spapros import se
+from spapros import ev, se
 from spapros.util import util
 
 
@@ -30,6 +28,7 @@ def tiny_adata(small_adata):
     sc.pp.filter_genes(tiny_adata, min_counts=3)
     # np.isnan(small_adata.X.toarray()).all(axis=1)
     return tiny_adata
+
 
 @pytest.fixture()
 def tiny_adata_w_penalties(tiny_adata, lower_th=1, upper_th=3.5):
@@ -135,8 +134,8 @@ def ref_probeset(
         save_dir=None if not save_dir else request.getfixturevalue(save_dir),
         methods=reference_selections,
     )
-
     return reference_probesets
+
 
 ##############
 # evaluation #

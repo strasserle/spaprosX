@@ -1,6 +1,7 @@
 import random
 import pandas as pd
 import pytest
+
 from spapros import se
 from spapros.selection import select_pca_genes
 import scanpy as sc

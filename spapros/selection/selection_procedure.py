@@ -2,17 +2,9 @@ import itertools
 import json
 import os
 import pickle
+import time
 from pathlib import Path
-from typing import Any
-from typing import Callable
-from typing import cast
-from typing import Dict
-from typing import List
-from typing import Literal
-from typing import Optional
-from typing import Tuple
-from typing import Union
-
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union, cast
 import numpy as np
 import pandas as pd
 import scanpy as sc
@@ -542,24 +534,34 @@ class ProbesetSelector:  # (object)
                 )
 
             # PCA based pre selection
+            t = time.time()
             if self.n_pca_genes and (self.n_pca_genes > 0):
                 self._pca_selection()
+            self._save_time_measurement("PCA_selection", t)
 
             # DE forests
+            t = time.time()
             self._forest_DE_baseline_selection()
+            self._save_time_measurement("DE_forest_selection", t)
 
             # PCA forests (including optimization based on DE forests), or just DE forests if no PCA genes were selected
+            t = time.time()
             if self.n_pca_genes and (self.n_pca_genes > 0):
                 self._forest_selection()
             else:
                 self._set_DE_baseline_forest_to_final_forest()
+            self._save_time_measurement("PCA_forest_selection", t)
 
             # Add markers from curated list
+            t = time.time()
             if self.marker_list:
                 self._marker_selection()
+            self._save_time_measurement("marker_selection", t)
 
             # Compile probe set
+            t = time.time()
             self.probeset = self._compile_probeset_list()
+            self._save_time_measurement("compile_probeset", t)
             self.selection["final"] = self.probeset
 
             # Save attribute genes_of_primary_trees
@@ -569,23 +571,24 @@ class ProbesetSelector:  # (object)
                 self.progress.advance(selection_task)
                 self.progress.add_task(description="FINISHED\n", footer=True, only_text=True, total=0)
 
-            if self.save_dir:
+            if self.save_dir and (not os.path.exists(self.probeset_path)):
                 self.probeset.to_csv(self.probeset_path)
-            # TODO: we haven't included the checks to load the probeset if it already exists
 
     def _pca_selection(self) -> None:
         """Select genes based on pca loadings."""
         if self.selection["pca"] is None:
-            self.selection["pca"] = select.select_pca_genes(self.adata[:, self.genes],
-                                                            self.n_pca_genes,
-                                                            penalty_keys=self.pca_penalties,
-                                                            batch_aware=self.batch_aware,
-                                                            batch_key=self.batch_key,
-                                                            inplace=False,
-                                                            progress=self.progress,
-                                                            level=1,
-                                                            verbosity=self.verbosity,
-                                                            **self.pca_selection_hparams)
+            self.selection["pca"] = select.select_pca_genes(
+                self.adata[:, self.genes],
+                self.n_pca_genes,
+                penalty_keys=self.pca_penalties,
+                batch_aware=self.batch_aware,
+                batch_key=self.batch_key,
+                inplace=False,
+                progress=self.progress,
+                level=1,
+                verbosity=self.verbosity,
+                **self.pca_selection_hparams
+            )
             assert self.selection["pca"] is not None
             self.selection["pca"] = self.selection["pca"].sort_values("selection_ranking")
 
@@ -1358,12 +1361,15 @@ class ProbesetSelector:  # (object)
         # Final probeset result
         self.probeset_path = os.path.join(self.save_dir, "probeset.csv")
 
+        # Table for time measurements
+        self.time_table_path = os.path.join(self.save_dir, "time_measurements.csv")
+
     def _load_from_disk(self) -> None:
         """Load existing files into variables."""
 
         # marker list
         if os.path.exists(self.marker_list_path):
-            with open(self.marker_list_path, "r") as file:
+            with open(self.marker_list_path) as file:
                 self.marker_list, self.marker_list_filtered_out = json.load(file)
             if self.verbosity > 1:
                 print(f"\t Found and load {os.path.basename(self.marker_list_path)} (filtered marker list).")
@@ -1382,7 +1388,7 @@ class ProbesetSelector:  # (object)
         # selections
         for s in ["pre", "prior"]:
             if os.path.exists(self.selections_paths[s]):
-                with open(self.selections_paths[s], "r") as file:
+                with open(self.selections_paths[s]) as file:
                     self.selection[s] = json.load(file)
                 if self.verbosity > 1:
                     print(f"\t Found and load {os.path.basename(self.selections_paths[s])} (selection results).")
@@ -1393,7 +1399,6 @@ class ProbesetSelector:  # (object)
                 if self.verbosity > 1:
                     print(f"\t Found and load {os.path.basename(self.selections_paths[s])} (selection results).")
                 self.loaded_attributes.append(f"selection_{s}")
-        self.probeset = self.selection["final"]
 
         # forest
         for f in ["DE_prior_forest", "DE_baseline_forest", "pca_prior_forest", "forest"]:
@@ -1412,6 +1417,42 @@ class ProbesetSelector:  # (object)
                         f"\t Found and load {os.path.basename(self.forest_clfs_paths[f])} (forest classifier objects)."
                     )
                 self.loaded_attributes.append(f"forest_clfs_{f}")
+
+        # probeset
+        if os.path.exists(self.probeset_path):
+            self.probeset = pd.read_csv(self.probeset_path, index_col=0)
+            for key in self.probeset.columns:
+                if self.probeset.dtypes[key] == "object":
+                    self.probeset[key].fillna("", inplace=True)
+            if self.verbosity > 1:
+                print(f"\t Found and load {os.path.basename(self.probeset_path)} (probeset).")
+            self.loaded_attributes.append("probeset")
+
+    def _save_time_measurement(self, name: str, start_time: float) -> None:
+        """Save time measurement to table if save_dir is given.
+
+        Args:
+            name: Name of the time measurement.
+            start_time: Time when the measurement started.
+        """
+
+        time_diff = time.time() - start_time
+
+        if self.save_dir:
+            # Load table if it exists
+            if os.path.exists(self.time_table_path):
+                time_table = pd.read_csv(self.time_table_path, index_col=0)
+            else:
+                time_table = pd.DataFrame(columns=["step", "time (s)"])
+
+            if name not in time_table["step"].values:
+                # Add new measurement
+                time_table = pd.concat(
+                    [time_table, pd.DataFrame(data={"step": [name], "time (s)": [time_diff]})], ignore_index=True
+                )
+
+                # Save table
+                time_table.to_csv(self.time_table_path)
 
     # def _tqdm(self, iterator):
     #     """Wrapper for tqdm with verbose condition."""
@@ -1480,14 +1521,18 @@ class ProbesetSelector:  # (object)
         #    histograms - a little boring but better than nothing)
 
         SELECTIONS = ["pca", "DE", "marker"]
-        PENALTY_KEYS = {"pca": self.pca_penalties,
-                        "DE": self.DE_penalties,
-                        "marker": self.m_penalties_adata_celltypes + self.m_penalties_list_celltypes}
+        PENALTY_KEYS = {
+            "pca": self.pca_penalties,
+            "DE": self.DE_penalties,
+            "marker": self.m_penalties_adata_celltypes + self.m_penalties_list_celltypes,
+        }
         UNAPPLIED_PENALTY_KEYS = {p_key: ["expression_penalty"] for p_key in PENALTY_KEYS}
-        X_AXIS_KEYS = {"expression_penalty": "quantile_0.99",
-                       "expression_penalty_upper": "quantile_0.99",
-                       "expression_penalty_lower": "quantile_0.9 expr > 0",
-                       "marker": "quantile_0.99"}
+        X_AXIS_KEYS = {
+            "expression_penalty": "quantile_0.99",
+            "expression_penalty_upper": "quantile_0.99",
+            "expression_penalty_lower": "quantile_0.9 expr > 0",
+            "marker": "quantile_0.99",
+        }
 
         if selections is None:
             selections = SELECTIONS
@@ -1545,14 +1590,15 @@ class ProbesetSelector:  # (object)
                 if x_axis_key not in self.adata.var:
                     raise ValueError(f"Can't plot histogram because {x_axis_key} was not found.")
 
-        pl.selection_histogram(adata=self.adata,
-                               selections_dict=selections_dict,
-                               background_key=self.g_key if background_key is True else background_key,
-                               penalty_keys=penalty_keys,
-                               penalty_labels=penalty_labels,
-                               x_axis_keys=x_axis_keys,
-                               **kwargs
-                               )
+        pl.selection_histogram(
+            adata=self.adata,
+            selections_dict=selections_dict,
+            background_key=self.g_key if background_key is True else background_key,
+            penalty_keys=penalty_keys,
+            penalty_labels=penalty_labels,
+            x_axis_keys=x_axis_keys,
+            **kwargs,
+        )
 
     def plot_coexpression(
         self,
@@ -1637,8 +1683,9 @@ class ProbesetSelector:  # (object)
 
             # Create correlation matrix
             if issparse(a.X):
-                cor_mat = pd.DataFrame(index=a.var.index, columns=a.var.index,
-                                       data=np.corrcoef(a.X.toarray(), rowvar=False))
+                cor_mat = pd.DataFrame(
+                    index=a.var.index, columns=a.var.index, data=np.corrcoef(a.X.toarray(), rowvar=False)
+                )
             else:
                 cor_mat = pd.DataFrame(index=a.var.index, columns=a.var.index, data=np.corrcoef(a.X, rowvar=False))
 
@@ -1717,10 +1764,12 @@ class ProbesetSelector:  # (object)
         if importance_th is None:
             importance_th = min(self.selection["forest"]["importance_score"])
         df = (
-            self.selection["forest"].loc[
+            self.selection["forest"]
+            .loc[
                 (self.selection["forest"]["rank"] <= till_rank)
                 & (self.selection["forest"]["importance_score"] > importance_th)
-            ].copy()
+            ]
+            .copy()
         )
         selected_genes = [g for g in df.index if g in self.probeset[self.probeset["selection"]].index]
         df = df.loc[selected_genes]
@@ -1738,11 +1787,11 @@ class ProbesetSelector:  # (object)
         redo_umap = (adata.obsm is None) or (basis not in adata.obsm)
         # try:
         #    # check params
-        #    for param, value in adata.uns[basis]["params"].items():
-        #        if value != umap_params[param]:
-        #            redo_umap = True
+        #     for param, value in adata.uns[basis]["params"].items():
+        #         if value != umap_params[param]:
+        #             redo_umap = True
         # except KeyError:
-        #    redo_umap = True
+        #     redo_umap = True
 
         if redo_umap:
             redo_neighbors = False
@@ -1761,6 +1810,12 @@ class ProbesetSelector:  # (object)
 
         df = df.sort_values(by=["rank", "importance_score"], ascending=[True, False])
 
+        print(
+            "Note that the given feature importance scores are the maxima over cell types. In a future version we ",
+            "might plot cell type specific importance scores instead. For now please check ",
+            "selector.genes_of_primary_trees for cell type specific scores.",
+        )
+
         pl.clf_genes_umaps(adata, df, **kwargs)
 
     # def plot_tree_performances(self) -> None:
@@ -1777,9 +1832,9 @@ class ProbesetSelector:  # (object)
     def plot_gene_overlap(
         self,
         origins: List[
-            Literal["pre_selected", "prior_selected", "pca", "DE", "DE_1vsall", "DE_specific", "marker_list"]] =
-        None,
-        **kwargs
+            Literal["pre_selected", "prior_selected", "pca", "DE", "DE_1vsall", "DE_specific", "marker_list"]
+        ] = None,
+        **kwargs,
     ) -> None:
         """Plot the overlap of origins for the selected genes
 
@@ -1817,15 +1872,17 @@ class ProbesetSelector:  # (object)
 
         """
         ORIGINS: List[
-            Literal["pre_selected", "prior_selected", "pca", "DE", "DE_1vsall", "DE_specific", "marker_list"]] = \
-            ["pre_selected", "prior_selected", "pca", "DE", "DE_1vsall", "DE_specific", "marker_list"]
+            Literal["pre_selected", "prior_selected", "pca", "DE", "DE_1vsall", "DE_specific", "marker_list"]
+        ] = ["pre_selected", "prior_selected", "pca", "DE", "DE_1vsall", "DE_specific", "marker_list"]
 
-        ORIGIN_TO_PROBESET_COLNAME = {"pre_selected": "pre_selected",
-                                      "prior_selected": "prior_selected",
-                                      "pca": "pca_selected",
-                                      "DE": "celltypes_DE",
-                                      "DE_1vsall": "celltypes_DE_1vsall",
-                                      "DE_specific": "celltypes_DE_specific"}
+        ORIGIN_TO_PROBESET_COLNAME = {
+            "pre_selected": "pre_selected",
+            "prior_selected": "prior_selected",
+            "pca": "pca_selected",
+            "DE": "celltypes_DE",
+            "DE_1vsall": "celltypes_DE_1vsall",
+            "DE_specific": "celltypes_DE_specific",
+        }
 
         if not origins:
             origins = ORIGINS
@@ -2089,6 +2146,7 @@ def select_reference_probesets(
     adata: sc.AnnData,
     n: int,
     genes_key: Optional[str] = "highly_variable",
+    obs_key: str = "celltype",
     methods: Union[List[str], Dict[str, Dict]] = ["PCA", "PCAX", "DE", "DEX", "HVG", "random"],
     seeds: List[int] = [0],
     verbosity: int = 2,
@@ -2103,6 +2161,8 @@ def select_reference_probesets(
             Number of selected genes.
         genes_key:
             Key of ``adata.var`` for preselected genes (typically 'highly_variable_genes').
+        obs_key:
+            Only required for method 'DE'. Column name of `adata.obs` for which marker scores are calculated.
         methods:
             Methods used for selections. Supported methods and default are
             `['PCA', 'PCAX' 'DE', 'DEX', 'HVG', 'random']`. To specify hyperparameters of the methods provide a
@@ -2186,6 +2246,10 @@ def select_reference_probesets(
                 selections.append(
                     {"method": method, "name": f"{method}{seed_str}", "params": dict(methods[method], **{"seed": seed})}
                 )
+        elif method == "DE":
+            selections.append(
+                {"method": method, "name": method, "params": dict(methods[method], **{"obs_key": obs_key})}
+            )
         else:
             selections.append({"method": method, "name": method, "params": methods[method]})
 

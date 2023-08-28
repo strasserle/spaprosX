@@ -1,14 +1,7 @@
 import os
 import random
 import warnings
-from typing import Callable
-from typing import Dict
-from typing import List
-from typing import Literal
-from typing import Optional
-from typing import Tuple
-from typing import Union
-
+from typing import Callable, Dict, List, Literal, Optional, Tuple, Union
 import matplotlib.pyplot
 import matplotlib.pyplot as plt
 import numpy as np
@@ -17,13 +10,9 @@ import scanpy as sc
 import scipy
 import scipy.cluster.hierarchy as sch
 import seaborn as sns
-from rich.progress import BarColumn
-from rich.progress import Progress
-from rich.progress import TextColumn
-from rich.progress import TimeElapsedColumn
+from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 from scipy.sparse import issparse
 from sklearn.utils import sparsefuncs
-
 
 ##############
 # Data Utils #
@@ -53,7 +42,7 @@ def get_processed_pbmc_data(n_hvg: int = 1000):
     # Preprocess counts and get highly variable genes
     sc.pp.normalize_total(adata)
     sc.pp.log1p(adata)
-    sc.pp.highly_variable_genes(adata, flavor="cell_ranger", n_top_genes=1000)
+    sc.pp.highly_variable_genes(adata, flavor="cell_ranger", n_top_genes=n_hvg)
 
     # TODO: with "quantiles" or "with_expr_penalty"  bool / Add note that these expression constraints might not fit
     #      real experiments
@@ -778,7 +767,6 @@ def marker_mean_difference(
 class NestedProgress(Progress):
     def get_renderables(self):
         for task in self.tasks:
-
             # extract those self devined fields
             level = task.fields.get("level") if task.fields.get("level") else 1
             only_text = task.fields.get("only_text") if task.fields.get("only_text") else False

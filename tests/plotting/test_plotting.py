@@ -1,6 +1,7 @@
+import random
 import pytest
 from matplotlib.testing.compare import compare_images
-
+from spapros import pl
 
 #############
 # selection #
