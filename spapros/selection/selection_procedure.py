@@ -1280,9 +1280,11 @@ class ProbesetSelector:  # (object)
 
         # Here we define default values
         if subject == "pca_selection":
-            defaults: Dict[str, Any] = {}
+            defaults: Dict[str, Any] = {
+                "batch_aggr_fun": np.mean
+            }
         elif subject == "DE_selection":
-            defaults = {"n": 3, "per_group": True}
+            defaults = {"n": 3, "per_group": True, "batch_aggr_fun": np.sum}
         elif subject == "forest":
             defaults = {"n_trees": 50, "subsample": 1000, "test_subsample": 3000}
         elif subject == "forest_DE_basline":
@@ -1293,6 +1295,7 @@ class ProbesetSelector:  # (object)
                 "max_step": 3,
                 "min_outlier_dif": 0.02,
                 "n_terminal_repeats": 3,
+                "batch_aggr_fun": np.sum
             }
         elif subject == "add_forest_genes":
             defaults = {"n_max_per_it": 5, "performance_th": 0.02, "importance_th": 0}

@@ -448,7 +448,7 @@ class ProbesetEvaluator:
                         progress=self.progress if self.verbosity > 1 else None,
                         level=2,
                         verbosity=self.verbosity,
-                        set_id=set_id
+                        # set_id=set_id
                     )
                     if self.dir:
                         Path(os.path.dirname(self._res_file(metric, set_id))).mkdir(parents=True, exist_ok=True)
@@ -523,7 +523,7 @@ class ProbesetEvaluator:
                 pre_results=self.pre_results[metric][set_id],
                 parameters=self.metrics_params[metric],
                 n_jobs=self.n_jobs,
-                set_id=set_id,
+                # set_id=set_id,
             )
             if self.dir:
                 Path(os.path.dirname(self._res_file(metric, set_id))).mkdir(parents=True, exist_ok=True)

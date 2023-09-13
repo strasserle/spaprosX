@@ -38,11 +38,13 @@ METRICS_PARAMETERS: Dict[str, Dict] = {
     "knn_overlap_X": {
         "ks": [5, 10, 15, 20, 25, 30],
         "batch_key": "batch",
+        "batch_aggr_fun": np.mean
     },
     "knn_overlap_weighted_X": {
         "ks": [5, 10, 15, 20, 25, 30],
         "batch_key": "batch",
-        "weight_key": "celltype"
+        "weight_key": "celltype",
+        "batch_aggr_fun": np.mean
     },
     "forest_clfs": {
         "ct_key": "celltype",
@@ -312,7 +314,7 @@ def metric_computations(
     progress: Progress = None,
     level: int = 2,
     verbosity: int = 2,
-    set_id: str = None,
+    # set_id: str = None,
 ) -> pd.DataFrame:
     """Compute the probe set specific evaluation metrics.
 
@@ -361,7 +363,7 @@ def metric_computations(
             level=level,
             verbosity=verbosity,
             description=description,
-            set_id=set_id
+            # set_id=set_id
         )
     elif metric.startswith("knn_overlap_X") or metric.startswith("knn_overlap_weighted_X"):
         knn_df = pre_results
@@ -375,7 +377,7 @@ def metric_computations(
             level=level,
             verbosity=verbosity,
             description=description,
-            set_id=set_id
+            # set_id=set_id
         )
     elif metric == "forest_clfs":
         results = xgboost_forest_classification(
@@ -441,8 +443,13 @@ def metric_summary(results: pd.DataFrame = None, metric: str = None, parameters:
         means_df = results
         summary["knn_overlap weighted mean_overlap_AUC"] = summary_knn_AUC(means_df.squeeze())
     elif metric.startswith("knn_overlap_X") or metric.startswith("knn_overlap_weighted_X"):
-        # mean over all batches, i.e. stratified knn overlap score
-        summary[metric+" mean_overlap_AUC batch_mean"] = summary_knn_AUC(results.mean(axis=1))
+        # aggregate over all batches, i.e. stratified knn overlap score
+        if "batch_aggr_fun" in parameters:
+            aggr_fun = parameters["batch_aggr_fun"]
+        else:
+            aggr_fun = np.mean
+        aggr_name = aggr_fun.__name__
+        summary[metric+f" mean_overlap_AUC batch_{aggr_name}"] = summary_knn_AUC(aggr_fun(results, axis=1))
         # batch wise knn overlap score
         for batch in results:
             summary[metric+" mean_overlap_AUC "+str(batch)] = summary_knn_AUC(results[batch])
@@ -903,7 +910,7 @@ def mean_overlaps(
     level: int = 2,
     verbosity: int = 2,
     description: str = "Mean overlaps...",
-    set_id: str = None
+    # set_id: str = None
 ) -> pd.DataFrame:
     """Calculate mean overlaps of knn graphs of different ks.
 
