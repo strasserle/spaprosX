@@ -182,11 +182,8 @@ class ProbesetSelector:  # (object)
             Data with log normalised counts in ``adata.X``.
         ct_key:
             Key in ``adata.obs`` with celltype annotations.
-                batch_key:
-            Key in ``adata.obs`` with batch annotations. Only necessary if ``batch_aware=True``.
-        batch_aware:
-            If `True`, use batch aware methods for gene selection. If ``adata.obs[batch_key]`` does not exists,
-            falling back to ``batch_aware=False``.
+        batch_key:
+            If not None, batch-aware selection is done. Key in ``adata.obs`` containing batch annotations.
         g_key:
             Key in ``adata.var`` for preselected genes (typically `'highly_variable_genes'`).
         n:
@@ -331,8 +328,7 @@ class ProbesetSelector:  # (object)
         self,
         adata: sc.AnnData,
         celltype_key: str,
-        batch_key: str = "batch",
-        batch_aware: bool = True,
+        batch_key: str = None,
         genes_key: Optional[str] = "highly_variable",
         n: Optional[int] = None,
         preselected_genes: List[str] = [],
@@ -505,9 +501,8 @@ class ProbesetSelector:  # (object)
         self.progress = util.NestedProgress()  # redirect_stdout=False
 
         # batch awareness
-        if batch_aware and batch_key is not None and batch_key in adata.obs:
+        if batch_key is not None and batch_key in adata.obs:
             self.batch_key = batch_key
-            self.batch_aware = batch_aware
         else:
             self.batch_key = None
             self.batch_aware = False
