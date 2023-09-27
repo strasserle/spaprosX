@@ -183,7 +183,8 @@ class ProbesetSelector:  # (object)
         ct_key:
             Key in ``adata.obs`` with celltype annotations.
         batch_key:
-            If not None, batch-aware selection is done. Key in ``adata.obs`` containing batch annotations.
+            Key in ``adata.obs`` containing batch annotations or `None`. If not `None`, selection is done in a
+            batch-aware manner.
         g_key:
             Key in ``adata.var`` for preselected genes (typically `'highly_variable_genes'`).
         n:
@@ -505,7 +506,7 @@ class ProbesetSelector:  # (object)
             self.batch_key = batch_key
         else:
             self.batch_key = None
-            self.batch_aware = False
+
 
     def select_probeset(self) -> None:
         """Run full selection procedure.
@@ -574,7 +575,6 @@ class ProbesetSelector:  # (object)
             self.selection["pca"] = select.select_pca_genes(self.adata[:, self.genes],
                                                             self.n_pca_genes,
                                                             penalty_keys=self.pca_penalties,
-                                                            batch_aware=self.batch_aware,
                                                             batch_key=self.batch_key,
                                                             inplace=False,
                                                             progress=self.progress,
@@ -604,7 +604,6 @@ class ProbesetSelector:  # (object)
                 obs_key=self.ct_key,
                 **self.DE_selection_hparams,
                 batch_key=self.batch_key,
-                batch_aware=self.batch_aware,
                 penalty_keys=self.DE_penalties,
                 groups=self.celltypes,
                 reference="rest",
@@ -675,7 +674,6 @@ class ProbesetSelector:  # (object)
                 self.forest_results["DE_prior_forest"],
                 ct_key=self.ct_key,
                 batch_key=self.batch_key,
-                batch_aware=self.batch_aware,
                 penalty_keys=self.DE_penalties,
                 tree_clf_kwargs=self.forest_hparams,
                 verbosity=self.verbosity,
