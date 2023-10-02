@@ -2187,6 +2187,7 @@ def select_reference_probesets(
 
     # Run selections
     progress = util.NestedProgress(disable=(verbosity == 0))
+    progress.stop()
     probesets = {}
 
     with progress:

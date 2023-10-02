@@ -32,6 +32,7 @@ def test_selection_params(
         prior_genes=prior_genes,
         n_pca_genes=n_pca_genes,
         save_dir=None,
+        verbosity=0
     )
     selector.select_probeset()
 
@@ -62,6 +63,7 @@ def test_selection_celltypes(adata_pbmc3k, celltypes, marker_list):
         forest_hparams={"n_trees": 10, "subsample": 200, "test_subsample": 400},
         save_dir=None,
         celltypes=celltypes,
+        verbosity=0
     )
     selector.select_probeset()
 
@@ -126,16 +128,16 @@ def test_selection_stable(adata_pbmc3k):
             0,
             None,
             {
-                "hvg_selection": {"flavor": "cell_ranger"},
-                "random_selection": {},
-                "pca_selection": {
+                "HVG": {"flavor": "cell_ranger"},
+                "random": {},
+                "PCA": {
                     "variance_scaled": False,
                     "absolute": True,
                     "n_pcs": 20,
                     "penalty_keys": [],
                     "corr_penalty": None,
                 },
-                "DE_selection": {"per_group": "True"},
+                "DE": {"per_group": "True"},
             },
         ),
         (
@@ -145,13 +147,13 @@ def test_selection_stable(adata_pbmc3k):
             1,
             None,
             {
-                "hvg_selection": {"flavor": "seurat"},
-                "pca_selection": {
+                "HVG": {"flavor": "seurat"},
+                "PCA": {
                     "variance_scaled": True,
                     "absolute": False,
                     "n_pcs": 10,
                 },
-                "DE_selection": {"per_group": "False"},
+                "DE": {"per_group": "False"},
             },
         ),
         (100, "highly_variable", [], 2, "tmp_path", ["PCA", "DE", "HVG", "random"]),
@@ -174,6 +176,7 @@ def test_select_reference_probesets(
 ## test for batch aware methods ##
 ##################################
 
+
 def test_select_pca_genes_per_batch(tiny_adata_w_penalties):
     a = tiny_adata_w_penalties
     a.obs["batch"] = ["batch_1", "batch_2"] * (a.shape[0]//2)
@@ -183,7 +186,6 @@ def test_select_pca_genes_per_batch(tiny_adata_w_penalties):
         a,
         n=50,
         penalty_keys=["expression_penalty_upper", "expression_penalty_lower"],
-        batch_aware=True,
         batch_key="batch",
         corr_penalty=None,
         inplace=False,
@@ -193,7 +195,6 @@ def test_select_pca_genes_per_batch(tiny_adata_w_penalties):
         a,
         n=50,
         penalty_keys=["expression_penalty_upper", "expression_penalty_lower"],
-        batch_aware=True,
         batch_key="one_batch",
         corr_penalty=None,
         inplace=False,
@@ -203,7 +204,6 @@ def test_select_pca_genes_per_batch(tiny_adata_w_penalties):
         a,
         n=50,
         penalty_keys=["expression_penalty_upper", "expression_penalty_lower"],
-        batch_aware=False,
         batch_key=None,
         corr_penalty=None,
         inplace=False,
@@ -248,7 +248,7 @@ def test_van_elteren_with_missing_cts():
     res = adata.uns["rank_genes_groups_stratified"]
     assert all(res["n_batches"].ct1 == 2)
     assert all(res["n_batches"].ct2 == 2)
-    assert all(res["n_batches"].ct3 == 1)
+    assert all(res["n_batches"].ct3 == 'non-batch-aware_case-1(1)')
 
     # ct3 missing in batch2 --> still no problem for one vs ct3 (because batch 2 lost but no ct)
     adata = sc.AnnData(np.random.randint(0, 100, (100, 30)))
@@ -306,7 +306,7 @@ def test_van_elteren_with_missing_cts():
     adata = sc.AnnData(np.random.randint(0, 100, (100, 30)))
     sc.pp.log1p(adata)
     adata.obs["batch"] = ["batch1"] * 50 + ["batch2"] * 50
-    adata.obs["cell_type"] = ["ct1"] *  0 + ["ct2"] * 30 + ["ct3"] * 10 + ["ct4"] * 10 + \
+    adata.obs["cell_type"] = ["ct1"] * 0 + ["ct2"] * 30 + ["ct3"] * 10 + ["ct4"] * 10 + \
                              ["ct1"] * 25 + ["ct2"] * 15 + ["ct3"] * 10 + ["ct4"] * 0
     adata.obs["cell_type"] = adata.obs["cell_type"].astype("category")
     van_elteren_test(adata, ct_key="cell_type", batch_key="batch", groups='all', reference="rest")

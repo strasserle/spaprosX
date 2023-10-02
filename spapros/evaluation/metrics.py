@@ -449,7 +449,7 @@ def metric_summary(results: pd.DataFrame = None, metric: str = None, parameters:
         else:
             aggr_fun = np.mean
         aggr_name = aggr_fun.__name__
-        summary[metric+f" mean_overlap_AUC batch_{aggr_name}"] = summary_knn_AUC(aggr_fun(results, axis=1))
+        summary[metric+f" mean_overlap_AUC batch_{aggr_name}"] = summary_knn_AUC(pd.Series(aggr_fun(results, axis=1), index=results.index))
         # batch wise knn overlap score
         for batch in results:
             summary[metric+" mean_overlap_AUC "+str(batch)] = summary_knn_AUC(results[batch])
@@ -786,7 +786,7 @@ def knns(
     adata: sc.AnnData,
     genes: Union[List, str] = "all",
     ks: List[int] = [10, 20],
-    batch_key: Union[str, None] = "batch",
+    batch_key: Union[str, None] = None,
     weight_key: Union[str, None] = None,
     progress: Progress = None,
     level: int = 2,
@@ -871,7 +871,7 @@ def knns(
             del a.obsp[o]
 
         # Set n_pcs to 50 or number of genes if < 50
-        n_pcs = np.min([50, a.shape[1] - 1])
+        n_pcs = np.min([50, min(a.shape) - 1])
 
         sc.tl.pca(a, n_comps=n_pcs)  # use_highly_variable=False
 
@@ -905,7 +905,7 @@ def mean_overlaps(
     knn_df: pd.DataFrame,
     ref_knn_df: pd.DataFrame,
     ks: List[int],
-    batch_key: Union[str, None] = "batch",
+    batch_key: Union[str, None] = None,
     progress: Progress = None,
     level: int = 2,
     verbosity: int = 2,

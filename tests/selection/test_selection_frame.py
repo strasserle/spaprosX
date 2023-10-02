@@ -44,3 +44,7 @@ def test_error_and_repeat(raw_selector):
     # now check that restarting the evaluation works (earlier, the progress bars made trouble)
     raw_selector.select_probeset()
     # assert None
+
+def test_selection_with_aggr_fun(selector_with_aggr_fun):
+    selector_with_aggr_fun.select_probeset()
+

@@ -8,11 +8,17 @@ import scanpy as sc
 from spapros import ev
 from spapros import se
 from spapros.util import util
-
+import anndata
 
 #############
 # selection #
 #############
+
+@pytest.fixture()
+def min_adata():
+    min_adata = sc.AnnData(np.random.negative_binomial(n=30, p= 0.98, size=1000).reshape(50, 20))
+    min_adata.obs['cell_type'] = random.choices(["cell_type_" + str(x) for x in range(5)], k=50)
+    min_adata.obs['batch'] = ['batch_A', 'batch_B'] * 25
 
 
 @pytest.fixture()
@@ -30,6 +36,7 @@ def tiny_adata(small_adata):
     sc.pp.filter_genes(tiny_adata, min_counts=3)
     # np.isnan(small_adata.X.toarray()).all(axis=1)
     return tiny_adata
+
 
 @pytest.fixture()
 def tiny_adata_w_penalties(tiny_adata, lower_th=1, upper_th=3.5):
@@ -63,6 +70,38 @@ def adata_pbmc3k():
     adata = sc.read_h5ad("tests/selection/test_data/adata_pbmc3k.h5ad")
     # quick fix because somehow "base" gets lost
     adata.uns["log1p"]["base"] = None
+    return adata
+
+
+@pytest.fixture
+def adata():
+
+    # variables (genes)
+    var_index = ["gene_1", "gene_2", "gene_3"]
+    ensembl = ["ENSG1", "ENSG", "NSG_3"]
+    var = pd.DataFrame(data=ensembl, index=var_index, columns=["ensembl"])
+
+    # observations (cells)
+    obs_index = ["cell_1", "cell_2", "cell_3", "cell_4", "cell_5", "cell_6", "cell_7", "cell_8"]
+    cell_type = ["B", "T", "NK", "NK", "T", "B", "B", "T"]
+    batch = ["batch_1"] * 4 + ["batch_2"] * 4
+    obs = pd.DataFrame(data={"cell_type": cell_type, "batch": batch}, index=obs_index)
+
+    # count matrix
+    # random.seed(0)
+    # X = np.array(random.choices(range(7), k=24, weights=[5, 1, 1, 1, 1])).reshape(8, 3)
+    X = np.array([[3, 2, 0],  # B
+               [0, 0, 0],  # T
+               [5, 0, 0],  # NK
+               [1, 1, 0],  # NK
+               [0, 2, 1],  # T
+               [6, 1, 4],  # B
+               [4, 0, 0],  # B
+               [2, 0, 2]]) # T
+
+    # assemble
+    adata = anndata.AnnData(X=X, obs=obs, var=var, dtype=X.dtype)
+
     return adata
 
 
@@ -103,11 +142,9 @@ def selector_with_marker(tiny_adata):
 
 
 @pytest.fixture()
-def selector_with_penalties(tiny_adata, lower_th=1, upper_th=3.5):
-
-    tiny_adata = tiny_adata_w_penalties(lower_th=1, upper_th=3.5)
+def selector_with_penalties(tiny_adata_w_penalties):
     selector = se.ProbesetSelector(
-        tiny_adata,
+        tiny_adata_w_penalties,
         n=50,
         celltype_key="celltype",
         forest_hparams={"n_trees": 10, "subsample": 200, "test_subsample": 400},
@@ -119,6 +156,23 @@ def selector_with_penalties(tiny_adata, lower_th=1, upper_th=3.5):
         DE_penalties=["expression_penalty_upper", "expression_penalty_lower"]
     )
     selector.select_probeset()
+    return selector
+
+
+@pytest.fixture()
+def selector_with_aggr_fun(tiny_adata):
+    sc.pp.log1p(tiny_adata)
+    selector = se.ProbesetSelector(
+        tiny_adata,
+        n=50,
+        celltype_key="celltype",
+        forest_hparams={"n_trees": 10, "subsample": 200, "test_subsample": 400},
+        verbosity=0,
+        save_dir=None,
+        DE_selection_hparams={"batch_aggr_fun": np.median},
+        pca_selection_hparams={"batch_aggr_fun": np.median},
+        forest_DE_baseline_hparams={"batch_aggr_fun": np.median},
+    )
     return selector
 
 
@@ -209,6 +263,7 @@ def evaluator_4_sets(small_adata, marker_list):
         evaluator.evaluate_probeset(set_id=set_id, genes=list(four_probesets[set_id]))
     return evaluator
 
+
 @pytest.fixture()
 def evaluator_X(small_adata, marker_list):
     evaluator = ev.ProbesetEvaluator(
@@ -235,8 +290,23 @@ def two_batch_evaluator(small_adata):
         scheme="full",
         verbosity=0,
         # results_dir="tests/evaluation/test_data/evaluation_results_2batches",
-        results_dir = None,
+        results_dir=None,
         batch_key=["tissue", "patient"]
+    )
+    return evaluator
+
+
+@pytest.fixture()
+def evaluator_with_aggr_fun(small_adata):
+    evaluator = ev.ProbesetEvaluator(
+        small_adata,
+        scheme="custom",
+        metrics=["knn_overlap_X_tissue"],
+        metrics_params={"knn_overlap_X_tissue": {"batch_aggr_fun": np.median}},
+        verbosity=0,
+        # results_dir="tests/evaluation/test_data/evaluation_results_2batches",
+        results_dir=None,
+        batch_key=["tissue"]
     )
     return evaluator
 

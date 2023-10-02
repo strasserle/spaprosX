@@ -44,6 +44,10 @@ def test_error_and_repeat(raw_evaluator, small_probeset):
 
 def test_two_batch_keys(two_batch_evaluator, small_probeset):
     two_batch_evaluator.evaluate_probeset(set_id="adata_two_batches", genes=small_probeset)
+    # two_batch_evaluator.summary_results.to_csv("tests/evaluation/test_data/evaluation_results_2batches/adata1_summary.csv")
     ref_results = pd.read_csv("tests/evaluation/test_data/evaluation_results_2batches/adata1_summary.csv", index_col=0)
     pd.testing.assert_frame_equal(two_batch_evaluator.summary_results, ref_results)
 
+
+def test_knnX_with_aggr_fun(evaluator_with_aggr_fun, small_probeset):
+    evaluator_with_aggr_fun.evaluate_probeset(set_id="testset", genes=small_probeset)

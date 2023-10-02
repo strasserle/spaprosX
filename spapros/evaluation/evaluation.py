@@ -1041,7 +1041,7 @@ class ProbesetEvaluator:
             else:
                 raise ValueError("No summaries found.")
         else:
-            if set_ids == "all":
+            if isinstance(set_ids, str) and set_ids == "all":
                 set_ids = self.summary_results.index.tolist()
             table = self.summary_results.loc[set_ids]
             pl.summary_table(table, **plot_kwargs)

@@ -106,8 +106,7 @@ def select_pca_genes(
     absolute: bool = True,
     n_pcs: int = 20,
     penalty_keys: list = [],
-    batch_aware: bool = True,
-    batch_key: Optional[str] = "batch",
+    batch_key: Optional[str] = None,
     batch_aggr_fun: Callable = np.mean,
     corr_penalty: Callable = None,
     inplace: bool = True,
@@ -118,8 +117,6 @@ def select_pca_genes(
     """Select n features based on pca loadings.
 
     Args:
-        batch_key:
-        batch_aware:
         adata:
             Data with log normalised counts in adata.X.
         n:
@@ -133,10 +130,9 @@ def select_pca_genes(
             Number of PCs used to calculate loadings sums.
         penalty_keys:
             List of keys for columns in adata.var that are multiplied with the scores.
-        batch_aware:
-            If `True`, calculate PCA scores per batch and average.
         batch_key:
-            Key in `adata.obs` with batch annotations. Only necessary if `batch_aware=True`.
+            Key in ``adata.obs`` containing batch annotations or `None`. If not `None`, selection is done in a
+            batch-aware manner.
         batch_aggr_fun:
             Function to aggregate PCA scores over batches. Default is np.mean, possible is also np.median.
         corr_penalty:
@@ -174,17 +170,17 @@ def select_pca_genes(
 
     clean_adata(a, obs_keys=[batch_key])
 
-    if batch_aware:
+    if batch_key is not None:
         batches = a.obs[batch_key].unique()
     else:
-        batches=["no_batch"]
+        batches = ["no_batch"]
 
     if progress and 2 * verbosity >= level:
         pca_task = progress.add_task("Select pca genes...", total=1*len(batches), level=1)
 
     scoresXbatch = pd.DataFrame(index=a.var.index, columns=batches)
     for batch in batches:
-        if batch_aware:
+        if batch_key is not None:
             a_batch = a[a.obs[batch_key]==batch].copy()
         else:
             a_batch = a
@@ -211,7 +207,7 @@ def select_pca_genes(
         scoresXbatch.loc[:, batch] = np.sum(loadings, axis=1)
 
     # average over batches
-    scores = pd.DataFrame({"scores": batch_aggr_fun(scoresXbatch, axis=1)})
+    scores = pd.DataFrame({"scores": batch_aggr_fun(scoresXbatch, axis=1)}, index=scoresXbatch.index)
 
     # apply penalties
     scores = apply_penalties(scores, adata, penalty_keys=penalty_keys)
@@ -244,9 +240,8 @@ def marker_scores(
     groups: Union[Literal["all"], Iterable[str]] = "all",
     reference: str = "rest",
     rankby_abs: bool = False,
-    batch_aware: bool = True,
-    batch_key: str = "batch",
-    batch_aggr_fun: Optional[Callable] = None,
+    batch_key: str = None,
+    batch_aggr_fun: Optional[Callable] = np.sum,
 ) -> pd.DataFrame:
     """Compute marker scores for genes in adata.
 
@@ -261,10 +256,9 @@ def marker_scores(
             See sc.tl.rank_genes_groups().
         rankby_abs:
             See sc.tl.rank_genes_groups().
-        batch_aware:
-            If `True`, use stratified version of Wilcoxon rank sum test.
         batch_key:
-            Key in `adata.obs` with batch annotations. Only necessary if `batch_aware=True`.
+            Key in ``adata.obs`` containing batch annotations or `None`. If not `None`, selection is done in a
+            batch-aware manner using a stratified version of the Wilcoxon rank sum test.
         batch_aggr_fun:
             Function to aggregate DE scores. The default in the van Elteres test is `np.sum`.
 
@@ -275,7 +269,7 @@ def marker_scores(
     df = pd.DataFrame(index=adata.var.index)
     adata_ = adata if isinstance(reference, str) else adata[adata.obs[obs_key].isin(reference)]
     ref = reference if isinstance(reference, str) else "rest"
-    if batch_aware:
+    if batch_key is not None:
         key_added = "rank_genes_groups_stratified"
         a = van_elteren_test(
             adata_,
@@ -320,9 +314,8 @@ def select_DE_genes(
     n: int,
     per_group: bool = False,
     obs_key: str = "celltype",
-    batch_aware: bool = True,
-    batch_key: str = "batch",
-    batch_aggr_fun: Optional[Callable] = None,
+    batch_key: str = None,
+    batch_aggr_fun: Optional[Callable] = np.sum,
     penalty_keys: list = [],
     groups: Union[Literal["all"], Iterable[str]] = "all",
     reference: str = "rest",
@@ -345,10 +338,9 @@ def select_DE_genes(
             selected for multiple groups.
         obs_key:
             Column name of `adata.obs` for which marker scores are calculated.
-        batch_aware:
-            If `True`, use stratified version of Wilcoxon rank sum test.
         batch_key:
-            Key in `adata.obs` with batch annotations. Only necessary if `batch_aware=True`.
+            Key in ``adata.obs`` containing batch annotations or `None`. If not `None`, selection is done in a
+            batch-aware manner using a stratified version of the Wilcoxon rank sum test.
         batch_aggr_fun:
             Function to aggregate DE scores. The default in the van Elteres test is `np.sum`.
         penalty_keys:
@@ -393,7 +385,6 @@ def select_DE_genes(
         reference=reference,
         rankby_abs=rankby_abs,
         batch_key=batch_key,
-        batch_aware=batch_aware,
         batch_aggr_fun=batch_aggr_fun,
     )
     scores = apply_penalties(scores, a, penalty_keys=penalty_keys)
@@ -474,8 +465,7 @@ def add_DE_genes_to_trees(
     adata: sc.AnnData,
     tree_results: list,
     ct_key: str = "Celltypes",
-    batch_aware: bool = True,
-    batch_key: str = "batch",
+    batch_key: str = None,
     batch_aggr_fun: Callable = np.sum,
     n_DE: int = 1,
     min_score: float = 0.9,
@@ -524,10 +514,9 @@ def add_DE_genes_to_trees(
             Results of :meth:`ev.forest_classifications()`.
         ct_key:
             Key of `adata.obs` with celltype annotations.
-        batch_aware:
-            If `True`, use stratified version of Wilcoxon rank sum test.
         batch_key:
-            Key in `adata.obs` with batch annotations. Only necessary if `batch_aware=True`.
+            Key in ``adata.obs`` containing batch annotations or `None`. If not `None`, selection is done in a
+            batch-aware manner using a stratified version of the Wilcoxon rank sum test.
         batch_aggr_fun:
             Function to aggregate DE scores. The default in the van Elteres test is `np.sum`.
         n_DE:
@@ -659,7 +648,6 @@ def add_DE_genes_to_trees(
                 per_group=True,
                 obs_key=ct_key,
                 batch_key=batch_key,
-                batch_aware=batch_aware,
                 batch_aggr_fun=batch_aggr_fun,
                 penalty_keys=penalty_keys,
                 groups=[ct],
@@ -1830,7 +1818,7 @@ def select_selfE_features(adata: sc.AnnData, n: int, inplace: bool = True, verbo
 def van_elteren_test(adata: sc.AnnData,
                      ct_key: str,
                      batch_key: str,
-                     batch_aggr_fun: Optional[Callable] = None,
+                     batch_aggr_fun: Optional[Callable] = np.sum,
                      groups: Union[Literal['all'], Iterable[str]] = 'all',
                      reference: str = 'rest',
                      norm: bool=True,
@@ -2233,6 +2221,6 @@ def _agg_DE_test_scores_over_batches(
     # calculate logfoldchanges
     logfoldchanges = np.log2((expm1_func(means_ct.T) + 1e-9) / (expm1_func(means_rest.T) + 1e-9))
 
-    n_batches =  n_batches_in_ct if "non-batch-aware score" not in w_stats_ct.columns else f"non-batch-aware_case-1({reason})"
+    n_batches = n_batches_in_ct if "non-batch-aware score" not in w_stats_ct.columns else f"non-batch-aware_case-1({reason})"
 
     return scores, pvals, names, pvals_adj, logfoldchanges, n_batches

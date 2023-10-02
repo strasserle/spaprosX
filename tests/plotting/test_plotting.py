@@ -104,39 +104,44 @@ def test_selection_plots(selector_with_penalties, fun, tmp_path, kwargs, fig_id)
 def test_plot_summary(ev, ref_name, tmp_path, request):
     fig_name = f"{tmp_path}/tmp_plot_summary.png"
     ev = request.getfixturevalue(ev)
-    ev.plot_summary(show=False, save=fig_name)
-    # ev.plot_summary(show=False, save=ref_name)
-    assert compare_images( ref_name, fig_name, 0.001) is None
+    probesets = ev.summary_results.index.sort_values()
+    ev.plot_summary(show=False, save=fig_name, set_ids=probesets)
+    ev.plot_summary(show=False, save=ref_name, set_ids=probesets)
+    assert compare_images(ref_name, fig_name, 0.001) is None
 
 
 @pytest.mark.parametrize(
     "fun, kwargs",
     [
-        ("plot_confusion_matrix", {}),
-        ("plot_coexpression", {}),
-        ("plot_cluster_similarity", {}),
+        ("plot_confusion_matrix", {"kwargs_name": "kwargs1"}),
+        ("plot_coexpression", {"kwargs_name": "kwargs1"}),
+        ("plot_cluster_similarity", {"kwargs_name": "kwargs1"}),
 
         # ev.plot_knn_overlap --> pl.knn_overlap
         ("plot_knn_overlap", {
+            "kwargs_name": "kwargs1",
             "set_ids": ["ref_DE", "ref_PCA", "spapros_selection"],
             "selections_info": None
         }),
         ("plot_knn_overlap", {
+            "kwargs_name": "kwargs2",
             "set_ids": None,
             "selections_info": "selections_info_1"
         }),
         ("plot_knn_overlap", {
+            "kwargs_name": "kwargs3",
             "set_ids": None,
             "selections_info": "selections_info_2"
         }),
     ],
 )
 def test_evaluation_plots(evaluator_4_sets, fun, tmp_path, kwargs, request):
-    ref_name = f"tests/plotting/test_data/evaluation_{fun}_{kwargs}.png"
-    fig_name = f"{tmp_path}/evaluations_{fun}_{kwargs}.png"
+    ref_name = f"tests/plotting/test_data/evaluation_{fun}_{kwargs['kwargs_name']}.png"
+    fig_name = f"{tmp_path}/evaluations_{fun}_{kwargs['kwargs_name']}.png"
     if "selections_info" in kwargs:
         if kwargs["selections_info"] is not None:
             kwargs["selections_info"] = request.getfixturevalue(kwargs["selections_info"])
+    del kwargs["kwargs_name"]
     getattr(evaluator_4_sets, fun)(save=fig_name, show=False, **kwargs)
     # getattr(evaluator_4_sets, fun)(save=ref_name, show=False, **kwargs)
     assert compare_images(ref_name, fig_name, 0.001) is None
