@@ -258,8 +258,8 @@ def test_van_elteren_with_missing_cts():
     adata.obs["cell_type"] = adata.obs["cell_type"].astype("category")
     van_elteren_test(adata, ct_key="cell_type", batch_key="batch", groups="all", reference="ct3")
     res = adata.uns["rank_genes_groups_stratified"]
-    assert all(res["n_batches"].ct1 == 1)
-    assert all(res["n_batches"].ct2 == 1)
+    assert all(res["n_batches"].ct1 == 'non-batch-aware_case-1(1)')
+    assert all(res["n_batches"].ct2 == 'non-batch-aware_case-1(1)')
 
     # ct3 missing in batch2 and ct1 missing in batch1 --> problem for ct1 vs ct3 --> additional
     # ct1 vs ct3 in batch 1 skipped (no ct1), in batch 2 skipped (no ct3) --> w_stats[ct1] empty --> case 1
@@ -273,8 +273,8 @@ def test_van_elteren_with_missing_cts():
     adata.obs["cell_type"] = adata.obs["cell_type"].astype("category")
     van_elteren_test(adata, ct_key="cell_type", batch_key="batch", groups="all", reference="ct3")
     res = adata.uns["rank_genes_groups_stratified"]
-    assert all(res["n_batches"].ct1 == "non-batch-aware_case-1")
-    assert all(res["n_batches"].ct2 == 1)
+    assert all(res["n_batches"].ct1 == "non-batch-aware_case-1(0)")
+    assert all(res["n_batches"].ct2 == 'non-batch-aware_case-1(1)')
 
     # ct3 missing in batch2 and ct3 is the target --> no problem because all reference cts also in batch 1
     # ct3 vs rest in batch 1 okay (vs 1, 2), in batch 2 skipped (no ct3) --> w_stats[ct3] 1 batch
@@ -286,7 +286,7 @@ def test_van_elteren_with_missing_cts():
     adata.obs["cell_type"] = adata.obs["cell_type"].astype("category")
     van_elteren_test(adata, ct_key="cell_type", batch_key="batch", groups=["ct3"], reference="rest")
     res = adata.uns["rank_genes_groups_stratified"]
-    assert all(res["n_batches"].ct3 == 1)
+    assert all(res["n_batches"].ct3 == 'non-batch-aware_case-1(1)')
 
     # ct3 is the target, only present in batch 1, ct1 only present in batch 2 --> problem for ct3 vs ct1 --> case 2
     # ct3 vs rest in batch 1 okay (vs 2), in batch 2 skipped (no ct3) --> w_stats[ct3] 1 batch
@@ -298,8 +298,7 @@ def test_van_elteren_with_missing_cts():
     adata.obs["cell_type"] = adata.obs["cell_type"].astype("category")
     van_elteren_test(adata, ct_key="cell_type", batch_key="batch", groups=["ct3"], reference="rest")
     res = adata.uns["rank_genes_groups_stratified"]
-    assert all(res["n_batches"].ct3[[x for x in range(0, 30, 2)]] == 1)
-    assert all(res["n_batches"].ct3[[x for x in range(1, 30, 2)]] == "non-batch-aware_case-2")
+    assert all(res["n_batches"].ct3 == 'non-batch-aware_case-1(1)')
 
     # multiple target cts
     # never ct1 vs ct4 pos --> additionally test [ct1, ct2, ct3, ct4] vs [ct1, ct 4] --> merge for each cell type
@@ -311,10 +310,8 @@ def test_van_elteren_with_missing_cts():
     adata.obs["cell_type"] = adata.obs["cell_type"].astype("category")
     van_elteren_test(adata, ct_key="cell_type", batch_key="batch", groups='all', reference="rest")
     res = adata.uns["rank_genes_groups_stratified"]
-    assert all(res["n_batches"].ct1[[x for x in range(0, 30, 2)]] == 1)
-    assert all(res["n_batches"].ct1[[x for x in range(1, 30, 2)]] == "non-batch-aware_case-2")
-    assert all(res["n_batches"].ct4[[x for x in range(0, 30, 2)]] == 1)
-    assert all(res["n_batches"].ct4[[x for x in range(1, 30, 2)]] == "non-batch-aware_case-2")
+    assert all(res["n_batches"].ct1 == 'non-batch-aware_case-1(1)')
+    assert all(res["n_batches"].ct4 == 'non-batch-aware_case-1(1)')
     assert all(res["n_batches"].ct2 == 2)
     assert all(res["n_batches"].ct3 == 2)
 

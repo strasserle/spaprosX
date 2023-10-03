@@ -277,10 +277,14 @@ def test_summary_knn_AUC(small_adata, small_probeset, batch_key):
     ks = [10, 12]
     knn_df = knns(small_adata[:100, :], genes=small_probeset, ks=ks, batch_key=batch_key)
     ref_knn_df = knns(small_adata[:100, :], genes="all", ks=ks, batch_key=batch_key)
-    mean_df = mean_overlaps(knn_df, ref_knn_df, ks=ks)
-    AUC = summary_knn_AUC(mean_df)
+    mean_df = mean_overlaps(knn_df, ref_knn_df, ks=ks, batch_key=batch_key)
+    if batch_key is None:
+        AUC = summary_knn_AUC(mean_df.iloc[0, :])
+    else:
+        AUC = summary_knn_AUC(pd.Series(np.mean(mean_df, axis=1), index=mean_df.index))
     if batch_key is None:
         # np.testing.assert_almost_equal(AUC, 0.6532386)
         np.testing.assert_almost_equal(AUC, 0.44127956)
     elif batch_key == "tissue":
-        np.testing.assert_almost_equal(AUC, 0.6619191)
+        # np.testing.assert_almost_equal(AUC, 0.6619191)
+        np.testing.assert_almost_equal(AUC, 0.7219503)

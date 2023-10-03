@@ -2146,28 +2146,22 @@ def select_reference_probesets(
             print(f"Method {method} is not available. Supported methods are {[key for key in selection_fcts]}.")
             # del methods[method]
     methods = {m: methods[m] for m in methods if m in selection_fcts}
-    if "DE" in methods:
-        methods["DE"]["batch_aware"] = False
     if "DEX" in methods:
         if "batch_key" in methods["DEX"]:
             batch_key = methods["DEX"]["batch_key"]
         else:
             batch_key = "batch"
         if batch_key in adata.obs:
-            methods["DEX"]["batch_aware"] = True
             methods["DEX"]["batch_key"] = batch_key
         else:
             print(f"Skipping DEX reference selection because {batch_key} not in adata.obs.")
             del methods["DEX"]
-    if "PCA" in methods:
-        methods["PCA"]["batch_aware"] =False
     if "PCAX" in methods:
         if "batch_key" in methods["PCAX"]:
             batch_key = methods["PCAX"]["batch_key"]
         else:
             batch_key = "batch"
         if batch_key in adata.obs:
-            methods["PCAX"]["batch_aware"] = True
             methods["PCAX"]["batch_key"] = batch_key
         else:
             print(f"Skipping PCAX reference selection because {batch_key} not in adata.obs.")
