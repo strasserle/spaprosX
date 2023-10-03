@@ -1,5 +1,5 @@
 from typing import Any, Dict, List, Tuple, Union
-
+import warnings
 import numpy as np
 import pandas as pd
 import scanpy as sc
@@ -10,7 +10,6 @@ from sklearn.metrics import confusion_matrix
 from sklearn.model_selection import StratifiedKFold
 from sklearn.utils.class_weight import compute_sample_weight
 from xgboost import XGBClassifier
-
 from spapros.util.util import (
     clean_adata,
     cluster_corr,
@@ -19,6 +18,8 @@ from spapros.util.util import (
     init_progress,
 )
 
+
+# note that ever batch aware metric needs a name ending on "_X", which will be later extended to "_X_{batch_key}"
 METRICS_PARAMETERS: Dict[str, Dict] = {
     "cluster_similarity": {
         "ns": [5, 60],
@@ -26,6 +27,21 @@ METRICS_PARAMETERS: Dict[str, Dict] = {
     },
     "knn_overlap": {
         "ks": [5, 10, 15, 20, 25, 30],
+    },
+    "knn_overlap_weighted": {
+        "ks": [5, 10, 15, 20, 25, 30],
+        "weight_key": "celltype"
+    },
+    "knn_overlap_X": {
+        "ks": [5, 10, 15, 20, 25, 30],
+        "batch_key": "batch",
+        "batch_aggr_fun": np.mean
+    },
+    "knn_overlap_weighted_X": {
+        "ks": [5, 10, 15, 20, 25, 30],
+        "batch_key": "batch",
+        "weight_key": "celltype",
+        "batch_aggr_fun": np.mean
     },
     "forest_clfs": {
         "ct_key": "celltype",
@@ -58,6 +74,11 @@ def get_metric_default_parameters() -> Dict[str, Dict]:
     """Get the default metric parameters."""
     return METRICS_PARAMETERS
 
+
+def get_metric_base(str: metric) -> str:
+    """Get the conventional metric of a batch-aware metric version."""
+    # note that ever batch aware metric needs a name ending on "_X", which will be later extended to "_X_{batch_key}"
+    return metric.split("_X")[0]
 
 ############################
 # General metric functions #
@@ -92,7 +113,8 @@ def metric_shared_computations(
         verbosity:
             Verbosity level.
     """
-    if metric not in get_metric_names():
+    metric_base = get_metric_base(metric)
+    if metric_base not in get_metric_names():
         raise ValueError(f"Unsupported metric: {metric}")
 
     progress, started = init_progress(progress, verbosity, level)
@@ -100,24 +122,62 @@ def metric_shared_computations(
     description = "Computing shared compuations for " + metric + "..."
 
     if metric == "cluster_similarity":
-        return leiden_clusterings(
+        results = leiden_clusterings(
             adata, parameters["ns"], progress=progress, level=level, verbosity=verbosity, description=description
         )
 
     elif metric == "knn_overlap":
-        return knns(
+        results = knns(
             adata,
             genes="all",
             ks=parameters["ks"],
+            batch_key=None,
+            weight_key=None,
+            progress=progress,
+            level=level,
+            verbosity=verbosity,
+            description=description,
+        )
+    elif metric == "knn_overlap_weighted":
+        results = knns(
+            adata,
+            genes="all",
+            ks=parameters["ks"],
+            batch_key=None,
+            weight_key=parameters["weight_key"],
+            progress=progress,
+            level=level,
+            verbosity=verbosity,
+            description=description,
+        )
+    elif metric.startswith("knn_overlap_X"):
+        results = knns(
+            adata,
+            genes="all",
+            ks=parameters["ks"],
+            batch_key=parameters["batch_key"],
+            weight_key=None,
+            progress=progress,
+            level=level,
+            verbosity=verbosity,
+            description=description,
+        )
+    elif metric.startswith("knn_overlap_weighted_X"):
+        results = knns(
+            adata,
+            genes="all",
+            ks=parameters["ks"],
+            batch_key=parameters["batch_key"],
+            weight_key=parameters["weight_key"],
             progress=progress,
             level=level,
             verbosity=verbosity,
             description=description,
         )
     elif metric == "forest_clfs":
-        pass
+        results = None
     elif metric == "marker_corr":
-        return marker_correlation_matrix(
+        results = marker_correlation_matrix(
             adata,
             marker_list=parameters["marker_list"],
             progress=progress,
@@ -126,12 +186,19 @@ def metric_shared_computations(
             description=description,
         )
     elif metric == "gene_corr":
-        return correlation_matrix(adata, progress=progress, level=level, verbosity=verbosity, description=description)
+        results = correlation_matrix(
+            adata,
+            progress=progress,
+            level=level,
+            verbosity=verbosity,
+            description=description)
     else:
         raise ValueError(f"Unsupported metric: {metric}")
 
     if progress and started:
         progress.stop()
+
+    return results
 
 
 def metric_pre_computations(
@@ -165,7 +232,8 @@ def metric_pre_computations(
         verbosity:
             Verbosity level.
     """
-    if metric not in get_metric_names():
+    metric_base = get_metric_base(metric)
+    if metric_base not in get_metric_names():
         raise ValueError(f"Unsupported metric: {metric}")
 
     progress, started = init_progress(progress, verbosity, level)
@@ -173,7 +241,7 @@ def metric_pre_computations(
     description = "Computing pre compuations for " + metric + ".."
 
     if metric == "cluster_similarity":
-        return leiden_clusterings(
+        df = leiden_clusterings(
             adata[:, genes],
             parameters["ns"],
             progress=progress,
@@ -182,26 +250,66 @@ def metric_pre_computations(
             description=description,
         )
     elif metric == "knn_overlap":
-        return knns(
+        df = knns(
             adata,
             genes=genes,
             ks=parameters["ks"],
+            batch_key=None,
+            weight_key=None,
+            progress=progress,
+            level=level,
+            verbosity=verbosity,
+            description=description,
+        )
+    elif metric.startswith("knn_overlap_X"):
+        df = knns(
+            adata,
+            genes=genes,
+            ks=parameters["ks"],
+            batch_key=parameters["batch_key"],
+            weight_key=None,
+            progress=progress,
+            level=level,
+            verbosity=verbosity,
+            description=description,
+        )
+    elif metric == "knn_overlap_weighted":
+        df = knns(
+            adata,
+            genes=genes,
+            ks=parameters["ks"],
+            batch_key=None,
+            weight_key=parameters["weight_key"],
+            progress=progress,
+            level=level,
+            verbosity=verbosity,
+            description=description,
+        )
+    elif metric.startswith("knn_overlap_weighted_X"):
+        df = knns(
+            adata,
+            genes=genes,
+            ks=parameters["ks"],
+            batch_key=parameters["batch_key"],
+            weight_key=parameters["weight_key"],
             progress=progress,
             level=level,
             verbosity=verbosity,
             description=description,
         )
     elif metric == "forest_clfs":
-        return None
+        df = None
     elif metric == "marker_corr":
-        return None
+        df = None
     elif metric == "gene_corr":
-        return None
+        df = None
     else:
         raise ValueError(f"Unsupported metric: {metric}")
 
     if progress and started:
         progress.stop()
+
+    return df
 
 
 def metric_computations(
@@ -215,6 +323,7 @@ def metric_computations(
     progress: Progress = None,
     level: int = 2,
     verbosity: int = 2,
+    # set_id: str = None,
 ) -> pd.DataFrame:
     """Compute the probe set specific evaluation metrics.
 
@@ -240,8 +349,8 @@ def metric_computations(
         verbosity:
             Verbosity level.
     """
-
-    if metric not in get_metric_names():
+    metric_base = get_metric_base(metric)
+    if metric_base not in get_metric_names():
         raise ValueError(f"Unsupported metric: {metric}")
 
     progress, started = init_progress(progress, verbosity, level)
@@ -251,21 +360,36 @@ def metric_computations(
     if metric == "cluster_similarity":
         ann = pre_results
         ref_ann = shared_results
-        nmis = clustering_nmis(
+        df = clustering_nmis(
             ann, ref_ann, parameters["ns"], progress=progress, level=level, verbosity=verbosity, description=description
         )
-        return nmis
-    elif metric == "knn_overlap":
+    elif metric == "knn_overlap" or metric == "knn_overlap_weighted":
         knn_df = pre_results
         ref_knn_df = shared_results
-        return mean_overlaps(
+        df = mean_overlaps(
             knn_df,
             ref_knn_df,
             parameters["ks"],
+            batch_key=None,
             progress=progress,
             level=level,
             verbosity=verbosity,
             description=description,
+            # set_id=set_id
+        )
+    elif metric.startswith("knn_overlap_X") or metric.startswith("knn_overlap_weighted_X"):
+        knn_df = pre_results
+        ref_knn_df = shared_results
+        df = mean_overlaps(
+            knn_df,
+            ref_knn_df,
+            parameters["ks"],
+            batch_key=parameters["batch_key"],
+            progress=progress,
+            level=level,
+            verbosity=verbosity,
+            description=description,
+            # set_id=set_id
         )
     elif metric == "forest_clfs":
         results = xgboost_forest_classification(
@@ -279,17 +403,16 @@ def metric_computations(
             verbosity=verbosity,
             description=description,
         )
-        conf_mat = results[0]
-        return conf_mat
+        df = results[0]
     elif metric == "marker_corr":
         marker_cor = shared_results
         params = {k: v for k, v in parameters.items() if (k != "marker_list")}
-        return max_marker_correlations(
+        df = max_marker_correlations(
             genes, marker_cor, **params, progress=progress, level=level, verbosity=verbosity, description=description
         )
     elif metric == "gene_corr":
         full_cor_mat = shared_results
-        return gene_set_correlation_matrix(
+        df = gene_set_correlation_matrix(
             genes,
             full_cor_mat,
             ordered=True,
@@ -298,9 +421,13 @@ def metric_computations(
             verbosity=verbosity,
             description=description,
         )
+    else:
+        raise ValueError(f"Unsupported metric: {metric}")
 
     if progress and started:
         progress.stop()
+
+    return df
 
 
 def metric_summary(results: pd.DataFrame = None, metric: str = None, parameters: Dict = {}) -> Dict[str, Any]:
@@ -314,8 +441,8 @@ def metric_summary(results: pd.DataFrame = None, metric: str = None, parameters:
         parameters:
             Parameters for the calculation of the metric.
     """
-
-    if metric not in get_metric_names():
+    metric_base = get_metric_base(metric)
+    if metric_base not in get_metric_names():
         raise ValueError(f"Unsupported metric: {metric}")
 
     summary: Dict[str, Any] = {}
@@ -326,7 +453,21 @@ def metric_summary(results: pd.DataFrame = None, metric: str = None, parameters:
             summary["cluster_similarity " + s] = val
     elif metric == "knn_overlap":
         means_df = results
-        summary["knn_overlap mean_overlap_AUC"] = summary_knn_AUC(means_df)
+        summary["knn_overlap mean_overlap_AUC"] = summary_knn_AUC(means_df.squeeze())
+    elif metric == "knn_overlap_weighted":
+        means_df = results
+        summary["knn_overlap weighted mean_overlap_AUC"] = summary_knn_AUC(means_df.squeeze())
+    elif metric.startswith("knn_overlap_X") or metric.startswith("knn_overlap_weighted_X"):
+        # aggregate over all batches, i.e. stratified knn overlap score
+        if "batch_aggr_fun" in parameters:
+            aggr_fun = parameters["batch_aggr_fun"]
+        else:
+            aggr_fun = np.mean
+        aggr_name = aggr_fun.__name__
+        summary[metric+f" mean_overlap_AUC batch_{aggr_name}"] = summary_knn_AUC(pd.Series(aggr_fun(results, axis=1), index=results.index))
+        # batch wise knn overlap score
+        for batch in results:
+            summary[metric+" mean_overlap_AUC "+str(batch)] = summary_knn_AUC(results[batch])
     elif metric == "forest_clfs":
         conf_mat = results
         summary["forest_clfs accuracy"] = summary_metric_diagonal_confusion_mean(conf_mat)
@@ -345,6 +486,8 @@ def metric_summary(results: pd.DataFrame = None, metric: str = None, parameters:
         if "threshold" in parameters:
             th = parameters["threshold"]
             summary[f"gene_corr perct max < {th}"] = summary_metric_correlation_percentage(cor_mat, threshold=th)
+    else:
+        raise ValueError(f"Unsupported metric: {metric}")
 
     return summary
 
@@ -651,13 +794,15 @@ def summary_nmi_AUCs(nmis: pd.DataFrame, AUC_borders: List[List]) -> Dict[str, f
 # knn_overlap metric functions #
 ################################
 
-# SHARED AND and PER PROBESET computations
+# SHARED AND PER PROBESET computations
 
 
 def knns(
     adata: sc.AnnData,
     genes: Union[List, str] = "all",
     ks: List[int] = [10, 20],
+    batch_key: Union[str, None] = None,
+    weight_key: Union[str, None] = None,
     progress: Progress = None,
     level: int = 2,
     verbosity: int = 2,
@@ -672,6 +817,12 @@ def knns(
             A list of selected genes or "all".
         ks:
             Calculate knn graphs for each k in :attr:`ks`.
+        batch_key:
+            Key in `adata.obs` with batch annotations. If not None, KNNs are calculated within batches and the returned
+            dataframe contains an additional column with the batch annotation.
+        weight_key:
+            Key in `adata.obs` with e.g. cell type annotations. Used for weighting the KNN overlap means. If `None`, no
+            weighting is done.
         progress:
             :attr:`rich.Progress` object if progress bars should be shown.
         level:
@@ -685,9 +836,9 @@ def knns(
         pd.DataFrame:
             Includes nearest neighbors for all ks::
 
-                gene (index), k10_1, k10_2, ..., k20_1, k20_2, ...
-                ISG15       , 3789 , 512  ,    , 9720 , 15   , ...
-                TNFRSF4     , 678  , 713  ,    , 7735 , 6225 , ...
+                cell (index), k10_1, k10_2, ..., k20_1, k20_2, ...
+                cell_1       , 3789 , 512  ,    , 9720 , 15   , ...
+                cell_2     , 678  , 713  ,    , 7735 , 6225 , ...
                 ...
     """
 
@@ -696,76 +847,96 @@ def knns(
     # Subset adata to gene set
     if isinstance(genes, str) and (genes == "all"):
         genes = adata.var_names
+    adata_tmp = adata[:, genes].copy()
 
-    a = adata[:, genes].copy()
-
-    # Set n_pcs to 50 or number of genes if < 50. (Note that the neighbors graph is calculated on hvgs only if present)
-    if "highly_variable" in adata.var:
-        genes_hvg = a[:, a.var["highly_variable"]].var_names
+    # subset data into batches
+    df = pd.DataFrame(index=adata_tmp.obs_names, columns=[f"k{k}_{i}" for k in ks for i in range(k-1)])
+    if weight_key is not None and weight_key in adata.obs:
+        df["weight_cat"] = adata_tmp.obs[weight_key]
+    elif weight_key is not None and weight_key not in adata.obs:
+        warnings.warn(f"Weighting key {weight_key} specified but not found in adata. No weighting is done.")
+    if batch_key is not None and batch_key in adata_tmp.obs:
+        df[batch_key] = adata_tmp.obs[batch_key].copy()
+        batches = df[batch_key].unique()
     else:
-        genes_hvg = genes
+        batches = ["no_batching"]
+    if progress:
+        task_knn = progress.add_task(description, level=level, total=len(ks) * len(batches))
 
-    n_pcs = np.min([50, len(genes_hvg) - 1])
+    for batch in batches:
 
-    if n_pcs == 0:
-        print("There is no overlap of genes between the probeset and the reference dataset.")
+        if not batch == "no_batching":
+            batch_mask = adata_tmp.obs[batch_key] == batch
+        else:
+            batch_mask = pd.Series(index=adata_tmp.obs.index, data=True)
+        a = adata_tmp[batch_mask].copy()
 
-    # Delete existing PCAs, neighbor graphs, etc. and calculate PCA for n_pcs
-    uns = [key for key in a.uns]
-    for u in uns:
-        del a.uns[u]
-    obsm = [key for key in a.obsm]
-    for o in obsm:
-        del a.obsm[o]
-    varm = [key for key in a.varm]
-    for v in varm:
-        del a.varm[v]
-    obsp = [key for key in a.obsp]
-    for o in obsp:
-        del a.obsp[o]
+        # Delete existing PCAs, neighbor graphs, etc. and calculate PCA for n_pcs
+        uns = [key for key in a.uns]
+        for u in uns:
+            del a.uns[u]
+        obsm = [key for key in a.obsm]
+        for o in obsm:
+            del a.obsm[o]
+        varm = [key for key in a.varm]
+        for v in varm:
+            del a.varm[v]
+        obsp = [key for key in a.obsp]
+        for o in obsp:
+            del a.obsp[o]
 
-    # Get nearest neighbors for each k
-    if n_pcs > 0:
+        # Set n_pcs to 50 or number of genes if < 50. (Note that the neighbors graph is calculated on hvgs only if present)
+        if "highly_variable" in adata.var:
+            genes_hvg = a[:, a.var["highly_variable"]].var_names
+        else:
+            genes_hvg = genes
 
-        df = pd.DataFrame(index=a.obs_names)
+        n_pcs = np.min([50, min(min(a.shape), len(genes_hvg)) - 1])
 
-        if progress:
-            task_knn = progress.add_task(description, level=level, total=len(ks))
+        if n_pcs == 0:
+            print("There is no overlap of genes between the probeset and the reference dataset.")
 
-        sc.tl.pca(a, n_comps=n_pcs)  # use_highly_variable=False
+        # Get nearest neighbors for each k
+        if n_pcs > 0:
+            df = pd.DataFrame(index=a.obs_names)
 
-        for k in ks:
-            if "neighbors" in a.uns:
-                del a.uns["neighbors"]
-            if "connectivities" in a.obsp:
-                del a.obsp["connectivities"]
-            if "distances" in a.obsp:
-                del a.obsp["distances"]
-            sc.pp.neighbors(a, n_neighbors=k)
-            rows, cols = a.obsp["distances"].nonzero()
-            nns = []
-            for r in range(a.n_obs):
-                nns.append(cols[rows == r].tolist())
-            nn_df = pd.DataFrame(nns, index=a.obs_names)
-            nn_df.columns = [f"k{k}_{i}" for i in range(len(nn_df.columns))]
-            df = pd.concat([df, nn_df], axis=1)
+            if progress:
+                task_knn = progress.add_task(description, level=level, total=len(ks))
+
+            sc.tl.pca(a, n_comps=n_pcs)  # use_highly_variable=False
+
+            for k in ks:
+                if "neighbors" in a.uns:
+                    del a.uns["neighbors"]
+                if "connectivities" in a.obsp:
+                    del a.obsp["connectivities"]
+                if "distances" in a.obsp:
+                    del a.obsp["distances"]
+                sc.pp.neighbors(a, n_neighbors=k)
+                rows, cols = a.obsp["distances"].nonzero()
+                nns = []
+                for r in range(a.n_obs):
+                    nns.append(cols[rows == r].tolist())
+                nn_df = pd.DataFrame(nns, index=a.obs.index)
+                nn_df.columns = [f"k{k}_{i}" for i in range(len(nn_df.columns))]
+                df.loc[batch_mask, [f"k{k}_{i}" for i in range(k-1)]] = nn_df
+
+                if progress:
+                    progress.advance(task_knn)
+        else:
+
+            if progress:
+                task_knn = progress.add_task(description, level=level, total=1)
+
+            cols = [f"k{k}_{i}" for k in ks for i in range(k - 1)]
+            df = pd.DataFrame(
+                index=a.obs_names,
+                columns=cols,
+                data=np.zeros((a.n_obs, len(cols)), dtype=int) - 1,
+            )
 
             if progress:
                 progress.advance(task_knn)
-    else:
-
-        if progress:
-            task_knn = progress.add_task(description, level=level, total=1)
-
-        cols = [f"k{k}_{i}" for k in ks for i in range(k - 1)]
-        df = pd.DataFrame(
-            index=a.obs_names,
-            columns=cols,
-            data=np.zeros((a.n_obs, len(cols)), dtype=int) - 1,
-        )
-
-        if progress:
-            progress.advance(task_knn)
 
     if progress and started:
         progress.stop()
@@ -777,10 +948,12 @@ def mean_overlaps(
     knn_df: pd.DataFrame,
     ref_knn_df: pd.DataFrame,
     ks: List[int],
+    batch_key: Union[str, None] = None,
     progress: Progress = None,
     level: int = 2,
     verbosity: int = 2,
     description: str = "Mean overlaps...",
+    # set_id: str = None
 ) -> pd.DataFrame:
     """Calculate mean overlaps of knn graphs of different ks.
 
@@ -791,6 +964,8 @@ def mean_overlaps(
             The results of the metric calculations, that are not probe set specific.
         ks:
             Calculate knn graphs for each k in `ks`.
+        batch_key:
+            Key in :attr:`knn_df` with batch annotations.
         progress:
             :attr:`rich.Progress` object if progress bars should be shown.
         level:
@@ -799,6 +974,8 @@ def mean_overlaps(
             Verbosity level.
         description:
             Description for progress bar.
+        set_id:
+            ID of gene set.
 
 
     Returns:
@@ -809,24 +986,61 @@ def mean_overlaps(
 
     progress, started = init_progress(progress, verbosity, level)
 
+    if batch_key is not None and batch_key in knn_df:
+        batches = knn_df[batch_key].unique()
+        columns = batches
+    else:
+        columns = ["full"]
+
     if progress:
-        task_meano_verlap = progress.add_task(description, level=level, total=len(ks))
-    df = pd.DataFrame(index=ks, data={"mean": 0.0})
-    for k in ks:
-        overlaps = []
-        cols_of_k = [col for col in knn_df.columns if (int(col.split("_")[0][1:]) == k)]
-        ref_cols_of_k = [col for col in ref_knn_df.columns if (int(col.split("_")[0][1:]) == k)]
-        nns1 = knn_df[cols_of_k].values.astype(int)
-        nns2 = ref_knn_df[ref_cols_of_k].values.astype(int)
-        for i in range(nns1.shape[0]):
-            set1 = set(nns1[i])
-            set2 = set(nns2[i])
-            max_intersection = np.min([len(set1), len(set2)])
-            overlaps.append(len(set1.intersection(set2)) / max_intersection)
-        df.loc[k, "mean"] = np.mean(overlaps)
+        task_mean_overlap = progress.add_task(description, level=level, total=len(ks)*len(columns))
+    df = pd.DataFrame(index=ks, data=0.0, columns=columns)
+    # d = dict()
+    for col in columns:
+
+        # subset into batches if wanted
+        if batch_key is not None and batch_key in knn_df:
+            batch_mask = knn_df[batch_key].astype(str) == str(col)
+            knn_df_b = knn_df[batch_mask].copy()
+            del knn_df_b[batch_key]
+            ref_batch_mask = ref_knn_df[batch_key].astype(str) == str(col)
+            ref_knn_df_b = ref_knn_df[ref_batch_mask].copy()
+            del ref_knn_df_b[batch_key]
+
+        else:
+            knn_df_b = knn_df
+            ref_knn_df_b = ref_knn_df
+
+        ## weights
+        # if "weight_cat" in knn_df_b:
+        #     print(knn_df["weight_cat"].value_counts())
+        #     print(knn_df_b["weight_cat"].value_counts())
+            # cts = knn_df["weight_cat"].unique()
+            # d[col] = pd.DataFrame(index=ks, columns=cts)
+
+        for k in ks:
+            # overlaps = []
+            overlaps = pd.DataFrame(index=knn_df_b.index, columns=["knn_overlap"])
+            cols_wo_weight_cat = knn_df_b.columns[:-1] if "weight_cat" in knn_df_b else knn_df_b.columns
+            cols_of_k = [col for col in cols_wo_weight_cat if (int(col.split("_")[0][1:]) == k)]
+            ref_cols_of_k = [col for col in cols_wo_weight_cat if (int(col.split("_")[0][1:]) == k)]
+            nns1 = knn_df_b[cols_of_k]
+            nns2 = ref_knn_df_b[ref_cols_of_k]
+            for i in range(min(nns1.shape[0], nns2.shape[0])):
+                set1 = set(nns1.iloc[i].dropna().astype(int))
+                set2 = set(nns2.iloc[i].dropna().astype(int))
+                max_intersection = np.min([len(set1), len(set2)])
+                intersection_frac = len(set1.intersection(set2)) / max_intersection
+                overlaps.iloc[i] = intersection_frac
+            if "weight_cat" in knn_df_b:
+                overlaps["weight_cat"] = knn_df_b["weight_cat"]
+                df.loc[k, col] = overlaps.groupby(by="weight_cat").mean().mean().values[0]
+            else:
+                df.loc[k, col] = overlaps.mean().values[0]
+            # d[col].loc[k, cts] = list(overlaps.groupby(by="weight_cat").mean().loc[cts]["knn_overlap"])
 
         if progress:
-            progress.advance(task_meano_verlap)
+            progress.advance(task_mean_overlap)
 
     if progress and started:
         progress.stop()
@@ -837,14 +1051,14 @@ def mean_overlaps(
 # SUMMARY metrics
 
 
-def summary_knn_AUC(means_df: pd.DataFrame) -> float:
+def summary_knn_AUC(means: pd.Series) -> float:
     """Calculate AUC of mean overlaps over ks.
 
     Args:
-        means_df: The results of the previously calculated metric (knn_overlap mean_overlap_AUC).
+        means: The results of the previously calculated metric (knn_overlap mean_overlap_AUC).
     """
-    x = [int(x) for x in means_df.index.values]
-    y = means_df["mean"].values
+    x = [int(x) for x in means.index.values]
+    y = means.values
     tmp = pd.Series(index=range(np.min(x), np.max(x)), dtype="float64")
     for i in range(len(y)):
         tmp.loc[x[i]] = y[i]
@@ -967,12 +1181,13 @@ def xgboost_forest_classification(
         celltypes = adata.obs[ct_key].unique().tolist()
     # Filter out cell types with less cells than n_cells_min
     cell_counts = adata.obs[ct_key].value_counts().loc[celltypes]
-    if (cell_counts < n_cells_min).any() and (verbosity > 0):
-        print(
-            f"[bold yellow]The following cell types are not included in forest classifications since they have fewer "
-            f"than {n_cells_min} cells: {cell_counts.loc[cell_counts < n_cells_min].index.tolist()}"
-        )
+    if (cell_counts < n_cells_min).any():
         celltypes = [ct for ct in celltypes if (cell_counts.loc[ct] >= n_cells_min)]
+        if verbosity > 0:
+            print(
+                f"[bold yellow]The following cell types are not included in forest classifications since they have fewer "
+                f"than {n_cells_min} cells: {cell_counts.loc[cell_counts < n_cells_min].index.tolist()}"
+            )
 
     # Get data
     obs = adata.obs[ct_key].isin(celltypes)
@@ -1038,6 +1253,8 @@ def xgboost_forest_classification(
                 gamma=gamma,
                 booster="gbtree",  # TODO: compare with 'dart',rate_drop= 0.1
                 random_state=seed,
+                use_label_encoder=False,  # To get rid of deprecation warning we convert labels into ints  # without
+                # label encoding: exception n_classes <= max(labels)
                 n_jobs=n_jobs,
             )
             clf.fit(

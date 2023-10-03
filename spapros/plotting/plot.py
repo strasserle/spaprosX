@@ -1,7 +1,6 @@
 """Plotting Module."""
 import itertools
 from typing import Callable, Dict, List, Literal, Optional, Tuple, Union
-
 import matplotlib
 import matplotlib.colors as colors
 import matplotlib.pyplot as plt
@@ -12,10 +11,12 @@ import scipy.cluster.hierarchy as sch
 import seaborn as sns
 from matplotlib.gridspec import GridSpec
 from scipy.interpolate import interp1d
+from spapros.plotting._masked_dotplot import MaskedDotPlot
+from upsetplot import from_indicators
+from upsetplot import UpSet
 from upsetplot import UpSet, from_indicators
 from venndata import venn
 
-from spapros.plotting._masked_dotplot import MaskedDotPlot
 
 #############################
 ## evaluation related plots ##
@@ -169,6 +170,7 @@ def correlation_matrix(
     fontsize: int = 28,
     n_cols: int = 3,
     colorbar: bool = True,
+    scale: bool = True,
 ) -> None:
     """Plot heatmap of gene correlation matrix.
 
@@ -185,17 +187,21 @@ def correlation_matrix(
             Factor for scaling the figure size.
         fontsize:
             Matplotlib fontsize.
-        colorbar:
-            Whether to draw a colorbar.
         n_cols:
             Number of subplot columns.
+        colorbar:
+            Whether to draw a colorbar.
+        scale:
+            Whether to scale the subfigure sizes by gene set size.
     """
 
+    # figure dimensions
     n_plots = len(set_ids)
     n_rows = (n_plots // n_cols) + int((n_plots % n_cols) > 0)
 
-    HSPACE_INCHES = 1 * n_rows
-    WSPACE_INCHES = 0.5 * n_cols
+    # figure size and spaces
+    HSPACE_INCHES = 1
+    WSPACE_INCHES = 0.5
     TOP_INCHES = 1
     BOTTOM_INCHES = 0.5
     RIGHT_INCHES = 2
@@ -203,35 +209,53 @@ def correlation_matrix(
     CBAR_WIDTH_INCHES = 0.4
     CBAR_RIGHT_INCHES = 1
     CBAR_LEFT_INCHES = RIGHT_INCHES - CBAR_WIDTH_INCHES - CBAR_RIGHT_INCHES
-
-    FIGURE_WIDTH = (size_factor * n_cols) + (((n_cols - 1) / n_cols) * WSPACE_INCHES) + RIGHT_INCHES + LEFT_INCHES
-    FIGURE_HEIGHT = (size_factor * n_rows) + (((n_rows - 1) / n_rows) * HSPACE_INCHES) + TOP_INCHES + BOTTOM_INCHES
-
+    FIGURE_WIDTH = (size_factor * n_cols) + (WSPACE_INCHES * (n_cols - 1)) + RIGHT_INCHES + LEFT_INCHES
+    FIGURE_HEIGHT = (size_factor * n_rows) + (HSPACE_INCHES * (n_rows - 1)) + TOP_INCHES + BOTTOM_INCHES
+    SUBPLOT_HEIGHT = size_factor / FIGURE_HEIGHT
+    SUBPLOT_WIDTH = size_factor / FIGURE_WIDTH
     fig = plt.figure(figsize=(FIGURE_WIDTH, FIGURE_HEIGHT))
 
-    for i, set_id in enumerate(set_ids):
-        plt.subplot(n_rows, n_cols, i + 1)
-        plt.imshow(cor_matrices[set_id].values, cmap="seismic", vmin=-1, vmax=1)
-        plt.title(set_id, fontsize=fontsize)
-        ax = plt.gca()
-        ax.axes.get_xaxis().set_visible(False)
-        ax.axes.get_yaxis().set_visible(False)
-
-    HSPACE = HSPACE_INCHES / FIGURE_HEIGHT
-    WSPACE = WSPACE_INCHES / FIGURE_WIDTH
+    # adjust subplot positions
+    WSPACE = WSPACE_INCHES / size_factor  # fraction of average axes width!
+    HSPACE = HSPACE_INCHES / size_factor  # fraction of average axes height!
     TOP = 1 - (TOP_INCHES / FIGURE_HEIGHT)
     BOTTOM = BOTTOM_INCHES / FIGURE_HEIGHT
     RIGHT = 1 - (RIGHT_INCHES / FIGURE_WIDTH)
     LEFT = LEFT_INCHES / FIGURE_WIDTH
-    SUBPLOT_HEIGHT = size_factor / FIGURE_HEIGHT
-    CBAR_WIDTH = CBAR_WIDTH_INCHES / FIGURE_WIDTH
-    CBAR_RIGHT = 1 - (CBAR_RIGHT_INCHES / FIGURE_WIDTH)
-    CBAR_LEFT = CBAR_RIGHT - (CBAR_LEFT_INCHES / FIGURE_WIDTH)
-
     plt.subplots_adjust(bottom=BOTTOM, top=TOP, left=LEFT, right=RIGHT, hspace=HSPACE, wspace=WSPACE)
 
+    # draw subplots
+    axes = []
+    n_genes = [cor_matrices[set_id].shape[1] for set_id in set_ids]
+    max_genes = max(n_genes)
+    for i, set_id in enumerate(set_ids):
+        ax = plt.subplot(n_rows, n_cols, i + 1, anchor="N")
+        ax.margins(0)
+        plt.imshow(cor_matrices[set_id].values, cmap="seismic", vmin=-1, vmax=1)
+        plt.title(set_id, fontsize=fontsize, loc="left")
+        ax.axes.get_xaxis().set_visible(False)
+        ax.axes.get_yaxis().set_visible(False)
+        axes.append(ax)
+
+        # scale subplot
+        if scale:
+            bb = ax.get_position()
+            SCALED_SUBPLOT_WIDTH = SUBPLOT_WIDTH * (n_genes[i] / max_genes)
+            bb.x1 = bb.x1 + SCALED_SUBPLOT_WIDTH - SUBPLOT_WIDTH
+            ax.set_position(bb)
+
+    # colorbar
     if colorbar:
-        cbar_ax = fig.add_axes([CBAR_LEFT, TOP - SUBPLOT_HEIGHT, CBAR_WIDTH, SUBPLOT_HEIGHT])
+        CBAR_WIDTH = CBAR_WIDTH_INCHES / FIGURE_WIDTH
+        CBAR_RIGHT = 1 - (CBAR_RIGHT_INCHES / FIGURE_WIDTH)
+        CBAR_LEFT = CBAR_RIGHT - (CBAR_LEFT_INCHES / FIGURE_WIDTH)
+        CBAR_HEIGHT = SUBPLOT_HEIGHT
+        CBAR_BOTTOM = TOP - SUBPLOT_HEIGHT
+        cbar_ax = fig.add_axes([
+            CBAR_LEFT,
+            CBAR_BOTTOM,
+            CBAR_WIDTH,
+            CBAR_HEIGHT])
         cbar = plt.colorbar(cax=cbar_ax)
         cbar.ax.tick_params(labelsize=fontsize)
 
@@ -680,6 +704,7 @@ def summary_table(
     default_order = [
         "cluster_similarity",
         "knn_overlap",
+        "knn_overlap_X",
         "Greens",
         "forest_clfs",
         "marker_corr",
@@ -916,10 +941,10 @@ def selection_histogram(
     adata: sc.AnnData,
     selections_dict: Dict[str, pd.DataFrame],
     x_axis_keys: Dict[str, str],
-    background_key: str = "highly_variable",
+    background_key: Union[str, bool, None] = "highly_variable",
     penalty_kernels: Dict[str, Dict[str, Callable]] = None,
     penalty_keys: Dict[str, List[str]] = None,
-    penalty_labels: Union[str, Dict[str, Dict[str, str]]] = "penalty",
+    penalty_labels: Dict[str, Dict[str, str]] = None,
     upper_borders: Union[bool, Dict[str, Union[float, bool]]] = None,
     lower_borders: Union[bool, Dict[str, Union[float, bool]]] = None,
     size_factor: float = 4.5,
@@ -937,12 +962,12 @@ def selection_histogram(
             dictionary keys are used as label in the plot and need to be equivalent to the keys in ``penalty_kernels``
             and ``penalty_keys``.
         x_axis_keys:
-            Dictionary with the column in ``adata.var`` that is used for the x axis of the plotted histograms. There are
+            Dictionary with the column in ``adata.var`` that is used for the x-axis of the plotted histograms. There are
             two reasonable options:
 
                 - If a penalty is plottet: the column containing the values of which the penalty scores were derived by
                   applying the penalty kernel. Use the ``penalty_key`` as dictionary key in this case.
-                - If no penalty is plottet: a column containing some statistic, eg. 99% quantile. Use the same keys as
+                - If no penalty is plotted: a column containing some statistic, e.g. 99% quantile. Use the same keys as
                   ``selection_dict`` in this case.
 
         background_key:
@@ -956,8 +981,9 @@ def selection_histogram(
             Dictionary of a list of column keys of ``adata.var`` containing penalty scores for each selection.
             Additionally, ``penalty_kernels`` can be provided. If both are None, only the histograms are plottet.
         penalty_labels:
-            A legeng label for each selection and each penalty. The keys of the outer dictionary need to be the
-            selection names. As keys for the inner dictionary, use the penalty keys.
+            A legend label for each selection and each penalty. The keys of the outer dictionary need to be the
+            selection names. As keys for the inner dictionary, use the penalty keys. The default penalty label is
+            ``'penalty'``.
         upper_borders:
             Dictionary with the lower borders above which the kernels are 1, which is indicated as a vertical line in
             the plot. Use the same dictionay keys as ``penalty_keys`` or ``penalty_kernels``. If None, it is
@@ -979,8 +1005,8 @@ def selection_histogram(
 
     """
 
-    x_values_dict = {}
-    y_values_dict = {}
+    x_values_dict: dict = {}
+    y_values_dict: dict = {}
 
     if penalty_labels is None:
         penalty_labels = {}
@@ -993,7 +1019,7 @@ def selection_histogram(
             y_values_dict[selection_label] = {}
 
             if selection_label in penalty_kernels:
-                for _, penalty_key in enumerate(penalty_kernels[selection_label]):
+                for penalty_key in penalty_kernels[selection_label]:
 
                     penalty_kernel = penalty_kernels[selection_label][penalty_key]
 
@@ -1012,7 +1038,7 @@ def selection_histogram(
             y_values_dict[selection_label] = {}
 
             if selection_label in penalty_keys:
-                for _, penalty_key in enumerate(penalty_keys[selection_label]):
+                for penalty_key in penalty_keys[selection_label]:
 
                     if penalty_key not in adata.var:
                         raise ValueError(f"Can't plot {penalty_key} because it was not found in adata.var. ")
@@ -1038,7 +1064,7 @@ def selection_histogram(
     fig = plt.figure(figsize=(size_factor * n_cols, 0.7 * size_factor * n_rows))
     gs = GridSpec(n_rows, n_cols, figure=fig)
     i = -1
-    for selection_label, selection_df in selections_dict.items():
+    for selection_label, selection_series in selections_dict.items():
 
         for j in range(n_cols):
             i = i + 1
@@ -1061,7 +1087,8 @@ def selection_histogram(
             assert isinstance(var_key, str)
 
             # get histogram data
-            selected_genes = selection_df.loc[selection_df["selection"]].index  # selection_df.index[selection_df]
+            selected_genes = selection_series.index[selection_series["selection"]]  # selection_df.loc[selection_df[
+            # "selection"]].index
             mask = adata.var.index.isin(selected_genes)
             hist_data = adata[:, mask].var[var_key]
             hist_kws = {"range": (0, np.max(hist_data))}
@@ -1281,7 +1308,7 @@ def clf_genes_umaps(
     ct_key: str = "celltype",
     n_cols: int = 4,
     size_factor: float = 1,
-    fontsize: int = 18,
+    fontsize: int = 20,
     show: bool = True,
     save: Optional[str] = None,
 ) -> None:
@@ -1303,7 +1330,7 @@ def clf_genes_umaps(
                 - `'decision_title'`: Subplot title.
                 - `'marker_title'`: Subplot title used if gene is marker. TODO: why decision_title AND marker_title?
                 - `'decision_cmap'`: Matplotlib colormap.
-                - `'marker_cmap'`: Matplotlib colormap used if gene is marker. 
+                - `'marker_cmap'`: Matplotlib colormap used if gene is marker.
                   TODO: why decision_cmap and marker_cmap (and why cmap at all...)
 
         basis:
@@ -1329,8 +1356,9 @@ def clf_genes_umaps(
     # prepare data
     a = adata.copy()
     celltypes = list({y for x in df["decision_celltypes"] for y in x})
+    celltypes.sort()
     subplots_decision = {ct: list(df.index[df["decision_celltypes"].apply(lambda x: ct in x)]) for ct in celltypes}
-    subplots_marker = {ct: [] for ct in celltypes}
+    subplots_marker: Dict[str, list] = {ct: [] for ct in celltypes}
     if "marker_celltypes" in df:
         subplots_marker = {ct: list(df.index[df["marker_celltypes"] == ct]) for ct in celltypes}
 
@@ -1362,48 +1390,48 @@ def clf_genes_umaps(
     rows_per_ct = [np.ceil(s / n_cols) for s in n_subplots]
     n_rows = int(sum(rows_per_ct))
     row_ceils = [int(np.ceil(s / r)) for s, r in zip(n_subplots, rows_per_ct)]
-    n_cols = max(row_ceils)
+    n_cols = max(row_ceils)  # if n_cols was set higher than necessary
+    print(n_rows)
 
-    CT_FONTSIZE = fontsize + 4
+    CT_FONTSIZE = fontsize + 4 * size_factor
     PPI = 72
-    CT_PADDING = CT_FONTSIZE / PPI  # space above celltype (additional to HSPACE)
 
-    HSPACE_INCHES = fontsize / PPI * n_rows * 3.5
-    WSPACE_INCHES = fontsize / PPI * n_cols * 4
-    TOP_INCHES = -CT_PADDING
-    BOTTOM_INCHES = 3
-    LEFT_INCHES = 3
-    RIGHT_INCHES = 3
-    CT_HEIGHT_INCHES = CT_PADDING + (CT_FONTSIZE / PPI)
-    SUBPLOT_HEIGHT_INCHES = 3
-    SUBPLOT_WIDTH_INCHES = 3
+    HSPACE_INCHES = fontsize / PPI * 4.5
+    WSPACE_INCHES = fontsize / PPI * 4
+    TOP_INCHES = 0.5 * fontsize / PPI
+    BOTTOM_INCHES = -HSPACE_INCHES + 1.5 * fontsize / PPI
+    LEFT_INCHES = 1.5 * fontsize / PPI
+    RIGHT_INCHES = -2 * fontsize / PPI
+    CT_HEIGHT_INCHES = 2 * fontsize / PPI
+    SUBPLOT_HEIGHT_INCHES = 3 * size_factor
+    SUBPLOT_WIDTH_INCHES = 3 * size_factor
+
+    GS_HEIGHTS_INCHES_nested = [[CT_HEIGHT_INCHES] + [SUBPLOT_HEIGHT_INCHES, HSPACE_INCHES] * int(n) for n in
+                                rows_per_ct]
+    GS_HEIGHTS_INCHES = [x for y in GS_HEIGHTS_INCHES_nested for x in y]
 
     FIGURE_WIDTH = (
-        (SUBPLOT_WIDTH_INCHES * n_cols) + (((n_cols - 1) / n_cols) * WSPACE_INCHES) + RIGHT_INCHES + LEFT_INCHES
-    ) * size_factor
+        (SUBPLOT_WIDTH_INCHES * n_cols)
+        + (WSPACE_INCHES * n_cols)
+        + RIGHT_INCHES
+        + LEFT_INCHES
+    )
     FIGURE_HEIGHT = (
-        ((SUBPLOT_HEIGHT_INCHES + CT_HEIGHT_INCHES) * n_rows)
-        + (((n_rows - 1) / n_rows) * HSPACE_INCHES)
+        sum(GS_HEIGHTS_INCHES)
         + TOP_INCHES
         + BOTTOM_INCHES
-    ) * size_factor
-
-    HSPACE = HSPACE_INCHES / FIGURE_HEIGHT
-    WSPACE = WSPACE_INCHES / FIGURE_WIDTH
-    TOP = 1 - (TOP_INCHES / FIGURE_HEIGHT)
-    BOTTOM = BOTTOM_INCHES / FIGURE_HEIGHT
-    RIGHT = 1 - (RIGHT_INCHES / FIGURE_WIDTH)
-    LEFT = LEFT_INCHES / FIGURE_WIDTH
-    SUBPLOT_HEIGHT = SUBPLOT_HEIGHT_INCHES / FIGURE_HEIGHT
-    CT_HEIGHT = CT_HEIGHT_INCHES / FIGURE_HEIGHT
+    )
 
     fig = plt.figure(figsize=(FIGURE_WIDTH, FIGURE_HEIGHT))
 
-    # note that every second row is just for legends
-    gs = GridSpec(n_rows * 2, n_cols, figure=fig, height_ratios=[CT_HEIGHT, SUBPLOT_HEIGHT] * n_rows)
-    i = -1
+    # note that legens, wspace and hspace are individual rows and columns
+    gs = GridSpec(len(GS_HEIGHTS_INCHES), n_cols * 2,
+                  figure=fig,
+                  height_ratios=[gs_height / FIGURE_HEIGHT for gs_height in GS_HEIGHTS_INCHES],
+                  width_ratios=[SUBPLOT_HEIGHT_INCHES / FIGURE_WIDTH, WSPACE_INCHES / FIGURE_WIDTH] * n_cols)
+    i = -2
     for ct in celltypes:
-        i += 1
+        i += 2  # skip hspace row
         j = 0
 
         # prepare data
@@ -1411,58 +1439,66 @@ def clf_genes_umaps(
         a.obs.loc[a.obs[ct] != ct, ct] = "other"
         a.obs[ct] = a.obs[ct].astype("category")
 
+        # celltype header
+        celltype_ax = fig.add_subplot(gs[i, 2 * j])
+        celltype_ax.text(
+            x=0,
+            y=1,
+            s=ct,
+            weight="bold",
+            verticalalignment="top",  # "baseline",
+            horizontalalignment="left",
+            fontsize=CT_FONTSIZE,
+        )
+        celltype_ax.set_axis_off()
+
+        i += 1
+
         # first subplot is the umap colored by celltype
-        ax = fig.add_subplot(gs[2 * i + 1, j])
+        ax = fig.add_subplot(gs[i, 2 * j])
         ax = sc.pl.embedding(
             adata=a,
             basis=basis,
             color=ct,
             show=False,
             ax=ax,
-            title="",
             palette=["blue", "grey"],
             legend_fontweight="heavy",
+            wspace=0,
+            hspace=0,
         )
         ax.xaxis.label.set_fontsize(fontsize)
         ax.yaxis.label.set_fontsize(fontsize)
         ax.title.set_fontsize(fontsize)
+        ax.set_title("")
         ax.get_legend().remove()
-
-        # add celltype header
-        celltype_ax = fig.add_subplot(gs[2 * i, j])
-        celltype_ax.text(
-            x=0,
-            y=0,
-            s=ct,
-            weight="bold",
-            verticalalignment="baseline",
-            horizontalalignment="left",
-            fontsize=CT_FONTSIZE,
-        )
-        celltype_ax.set_axis_off()
 
         # subplots for decision genes:
         for gene in subplots_decision[ct]:
 
             j += 1
             if j >= n_cols:
-                i += 1
+                i += 2  # skip hspace row
                 j = 0
 
             # set styling
-            ax = fig.add_subplot(gs[2 * i + 1, j])
+            ax = fig.add_subplot(gs[i, 2 * j])
             ax = sc.pl.embedding(
                 adata=a,
                 basis=basis,
                 color=gene,
                 show=False,
                 ax=ax,
-                title=df["decision_title"][gene],
                 cmap=df["decision_cmap"][gene],
+                wspace=0,
+                hspace=0,
             )
             ax.xaxis.label.set_fontsize(fontsize)
             ax.yaxis.label.set_fontsize(fontsize)
+            ax.set_title(df["decision_title"][gene])
             ax.title.set_fontsize(fontsize)
+
+            # colorbar
             cbar = ax.collections[-1].colorbar
             cbar.ax.tick_params(labelsize=fontsize)
 
@@ -1471,26 +1507,37 @@ def clf_genes_umaps(
 
             j += 1
             if j >= n_cols:
-                i += 1
+                i += 2  # skip hspace row
                 j = 0
 
-            ax = fig.add_subplot(gs[2 * i + 1, j])
+            ax = fig.add_subplot(gs[i, 2 * j])
             ax = sc.pl.embedding(
                 adata=a,
                 basis=basis,
                 color=gene,
                 show=False,
                 ax=ax,
-                title=df.loc[gene]["marker_title"],
                 cmap=df["marker_cmap"][gene],
+                wspace=0,
+                hspace=0,
             )
             ax.xaxis.label.set_fontsize(fontsize)
             ax.yaxis.label.set_fontsize(fontsize)
+            ax.set_title(df.loc[gene]["marker_title"])
             ax.title.set_fontsize(fontsize)
+
+            # cbar
             cbar = ax.collections[-1].colorbar
             cbar.ax.tick_params(labelsize=fontsize)
 
-    plt.subplots_adjust(bottom=BOTTOM, top=TOP, left=LEFT, right=RIGHT, hspace=HSPACE, wspace=WSPACE)
+    TOP = 1 - (TOP_INCHES / FIGURE_HEIGHT)
+    BOTTOM = BOTTOM_INCHES / FIGURE_HEIGHT
+    RIGHT = 1 - (RIGHT_INCHES / FIGURE_WIDTH)
+    LEFT = LEFT_INCHES / FIGURE_WIDTH
+
+    plt.subplots_adjust(bottom=BOTTOM, top=TOP, left=LEFT, right=RIGHT, hspace=0, wspace=0)
+    # note that wspace is solved by grid
+
     if show:
         plt.show()
     if save:
@@ -1500,54 +1547,55 @@ def clf_genes_umaps(
 
 def masked_dotplot(
     adata: sc.AnnData,  # TODO: adjust type hint
-    selector,
-    ct_key: str = "celltype",
-    imp_threshold: float = 0.05,
-    celltypes: Optional[List[str]] = None,
-    n_genes: Optional[int] = None,
-    comb_markers_only: bool = False,
-    markers_only: bool = False,
-    cmap: str = "Reds",
-    comb_marker_color: str = "darkblue",
-    marker_color: str = "blue",
-    non_adata_celltypes_color: str = "grey",
-    use_raw: bool = False,
-    save: Union[bool, str] = False,
+    var_names: Union[_VarNames, Mapping[str, _VarNames]],
+    groupby: Union[str, Sequence[str]],
+    tree_genes: Optional[dict] = None,
+    marker_genes: Optional[dict] = None,
+    further_celltypes: Optional[Sequence[str]] = None,
+    show: bool = True,
+    save: Optional[str] = None,
+    **kwargs
 ):
     """Create dotplot with additional annotation masks.
 
+    Note:
+        This method uses :py:class:`.MaskedDotPlot`, which is based on
+        :external:py:class:`scanpy.pl.DotPlot`.
+
     Args:
         adata:
-            AnnData with cell type annotations in `adata.obs[ct_key]`.
-        selector:
-            `ProbesetSelector` object with selected `selector.probeset`.
-        ct_key:
-            Column of `adata.obs` with cell type annotation.
-        imp_threshold:
-            Annotate genes as "Spapros marker" only for those genes with importance > ``imp_threshold``.
-        celltypes:
-            Optional subset of celltypes (rows of dotplot).
-        n_genes:
-            Optionally plot top ``n_genes`` genes.
-        comb_markers_only:
-            Whether to plot only genes that are "Spapros markers" for the plotted cell types. (can be combined with
-            markers_only, in that case markers that are not Spapros markers are also shown)
-        markers_only:
-            Whether to plot only genes that are markers for the plotted cell types. (can be combined with
-            ``comb_markers_only``, in that case Spapros markers that are not markers are also shown)
-        cmap:
-            Colormap of mean expressions.
-        comb_marker_color:
-            Color for "Spapros markers".
-        marker_color:
-            Color for marker genes.
-        non_adata_celltypes_color:
-            Color for celltypes that don't occur in the data set.
-        use_raw:
-            Whether to use `adata.raw` for plotting.
+            AnnData with ``adata.obs[groupby]`` cell type annotations.
+        var_names:
+            ``var_names`` should be a valid subset of ``adata.var_names``. If ``var_names`` is a mapping, then the key
+            is used as label to group the values (see ``var_group_labels``). The mapping values should be sequences of
+            valid ``adata.var_names``. In this case either coloring or ‘brackets’ are used for the grouping of var names
+            depending on the plot. When ``var_names`` is a mapping, then the ``var_group_labels`` and
+            ``var_group_positions`` are set.
+        groupby:
+            The key of the observation grouping to consider.
+        tree_genes:
+            Dictionary with lists of forest selected genes.
+        marker_genes:
+            Dictionary with list of marker genes for each celltype.
+        further_celltypes:
+            Celltypes that are not in ``adata.obs[groupby]``.
+        show:
+            Whether to display the plot.
         save:
-            If `True` or a `str`, save the figure.
+            Save the plot to path.
+        kwargs:
+            Further arguments for :class:`spapros.plotting._masked_dotplot.MaskedDotPlot`, e.g.:
 
+                cmap:
+                    Colormap of mean expressions.
+                comb_marker_color:
+                    Color for combinatorial markers.
+                marker_color:
+                    Color for marker genes.
+                non_adata_celltypes_color:
+                    Color for celltypes that don't occur in the data set.
+                use_raw:
+                    Use ``raw`` attribute of ``adata`` if present.
 
     Example:
 
@@ -1566,90 +1614,29 @@ def masked_dotplot(
 
 
     """
-    from spapros.selection import ProbesetSelector
 
-    if isinstance(selector, str):
-        selector = ProbesetSelector(adata, ct_key, save_dir=selector)
-        # TODO: think the last steps of the ProbesetSelector are still not saved..., needs to be fixed.
+    # TODO: think the last steps of the ProbesetSelector are still not saved..., needs to be fixed.
 
     # celltypes, possible origins:
     # - adata.obs[ct_key] (could include cts not used for selection)
     # - celltypes for selection (including markers, could include cts which are not in adata.obs[ct_key])
     # --> pool all together... order?
 
-    if celltypes is not None:
-        cts = celltypes
-        a = adata[adata.obs[ct_key].isin(celltypes)].copy()
-        # a.obs[ct_key] = a.obs[ct_key].astype(str).astype("category")
-    else:
-        # Cell types from adata
-        cts = adata.obs[ct_key].unique().tolist()
-        # Cell types from marker list only
-        if "celltypes_marker" in selector.probeset:
-            tmp = []
-            for markers_celltypes in selector.probeset["celltypes_marker"].str.split(","):
-                tmp += markers_celltypes
-            tmp = np.unique(tmp).tolist()
-            if "" in tmp:
-                tmp.remove("")
-            cts += [ct for ct in tmp if ct not in cts]
-        a = adata
-
-    # Get selected genes that are also in adata
-    selected_genes = [
-        g for g in selector.probeset[selector.probeset["selection"]].index.tolist() if g in adata.var_names
-    ]
-
-    # Get tree genes
-    tree_genes = {}
-    assert isinstance(selector.forest_results["forest"], list)
-    assert len(selector.forest_results["forest"]) == 3
-    assert isinstance(selector.forest_results["forest"][2], dict)
-    for ct, importance_tab in selector.forest_results["forest"][2].items():
-        if ct in cts:
-            tree_genes[ct] = importance_tab["0"].loc[importance_tab["0"] > imp_threshold].index.tolist()
-            tree_genes[ct] = [g for g in tree_genes[ct] if g in selected_genes]
-
-    # Get markers
-    marker_genes: Dict[str, list] = {ct: [] for ct in (cts)}
-    for ct in cts:
-        for gene in selector.probeset[selector.probeset["selection"]].index:
-            if ct in selector.probeset.loc[gene, "celltypes_marker"].split(",") and (gene in adata.var_names):
-                marker_genes[ct].append(gene)
-        marker_genes[ct] = [g for g in marker_genes[ct] if g in selected_genes]
-
-    # Optionally subset genes:
-    # Subset to combinatorial markers of shown celltypes only
-    if comb_markers_only or markers_only:
-        allowed_genes = []
-        if comb_markers_only:
-            allowed_genes += list(itertools.chain(*[tree_genes[ct] for ct in tree_genes.keys()]))
-        if markers_only:
-            allowed_genes += list(itertools.chain(*[marker_genes[ct] for ct in marker_genes.keys()]))
-        selected_genes = [g for g in selected_genes if g in allowed_genes]
-    # Subset to show top n_genes only
-    if n_genes:
-        selected_genes = selected_genes[: min(n_genes, len(selected_genes))]
-    # Filter (combinatorial) markers by genes that are not in the selected genes
-    for ct in cts:
-        marker_genes[ct] = [g for g in marker_genes[ct] if g in selected_genes]
-    for ct in tree_genes.keys():
-        tree_genes[ct] = [g for g in tree_genes[ct] if g in selected_genes]
+    # TODO
+    # proofread docstring
 
     dp = MaskedDotPlot(
-        a,
-        var_names=selected_genes,
-        groupby=ct_key,
+        adata,
+        var_names=var_names,
+        groupby=groupby,
         tree_genes=tree_genes,
         marker_genes=marker_genes,
-        further_celltypes=[ct for ct in cts if ct not in adata.obs[ct_key].unique()],
-        cmap=cmap,
-        tree_genes_color=comb_marker_color,
-        marker_genes_color=marker_color,
-        non_adata_celltypes_color=non_adata_celltypes_color,
-        use_raw=use_raw,
+        further_celltypes=further_celltypes,
+        **kwargs,
     )
     dp.make_figure()
+    if show:
+        plt.gcf().show()
     if save:
         plt.gcf().savefig(save, bbox_inches="tight", transparent=True)
 

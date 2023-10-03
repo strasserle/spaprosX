@@ -1,5 +1,7 @@
+import os
+import random
+import warnings
 from typing import Callable, Dict, List, Literal, Optional, Tuple, Union
-
 import matplotlib.pyplot
 import matplotlib.pyplot as plt
 import numpy as np
@@ -288,6 +290,10 @@ def cluster_corr(corr_array: Union[pd.DataFrame, np.ndarray]) -> Union[pd.DataFr
         pandas.DataFrame or numpy.ndarray:
             A NxN correlation matrix with the columns and rows rearranged
     """
+    # check whether the correlation matrix contains nan columns (might be because the respective gene is not expressed)
+    if pd.isna(corr_array).all(axis=0).any():
+        raise ValueError("The correlation matrix contains nan columns. Check whether you removed unexpressed genes.")
+
     pairwise_distances = sch.distance.pdist(corr_array)
     linkage = sch.linkage(pairwise_distances, method="complete")
     cluster_distance_threshold = pairwise_distances.max() / 2
@@ -754,6 +760,9 @@ def marker_mean_difference(
     mean_other = adata[~(adata.obs[ct_key] == celltype), genes].X.mean(axis=0)
     return mean_ct - mean_other
 
+########################
+## Progress Bar Utils ##
+########################
 
 class NestedProgress(Progress):
     def get_renderables(self):
@@ -802,3 +811,205 @@ def init_progress(progress, verbosity, level):
         progress.start()
         started = True
     return progress, started
+
+
+####################
+## spaprosX utils ##
+####################
+
+
+def sample_cells(
+        adata: sc.AnnData,
+        n_out: Optional[int] = None,
+        n_per_group: Optional[int] = None,
+        obs_key: Union[str, List[str], None] = None,
+        sampling_seed: Optional[int] = 0,
+        drop_unexpressed_genes: bool = False,
+        drop_rare_groups: bool = False,
+        rare_group_th: Optional[int] = None,
+        copy: bool = False,
+        verbosity=2,
+) -> sc.AnnData:
+    """Randomly sample cells from dataset.
+
+    Notes
+        The returned adata contains exactly ``n_out`` cells. The number of cells per group are thus as uniformly
+        distributed as possible.
+
+    Args:
+        adata:
+            Adata.
+        n_out:
+            Number of cells to sample.
+        n_per_group:
+            Alternativelty to the total number of cells to sample :attr:`n_out`, the maximum number of cells per group
+            can be provided.
+        obs_key:
+            Key or list of keys in ``adata.obs`` with annotation of some groups. If not None, sample a uniform
+            distribution over these groups. If it is a list, :attr:`key_added` is added to ``adata.obs`` annotating the
+            combined groups.
+        sampling_seed:
+            Random seed.
+        drop_unexpressed_genes:
+            Whether to remove genes which only zeros in expression matrix.
+        drop_rare_groups:
+            If True, groups that are less abundand than :attr:`rare_group_th` are dropped.
+        rare_group_th:
+            Ony relevant if :attr:`drop_rare_groups`. Default is ``(n_out/n_groups) - 1`` where n_groups is the number
+            of groups indicated by :attr:`obs_key`. Has to be > 2 for Wilcoxon rank sum test.
+        copy:
+            Whether to subset adata inplace or return a copy.
+
+    Returns:
+        Sampled adata.
+
+    """
+
+    a = adata.copy()
+
+    if sampling_seed is not None:
+        random.seed(sampling_seed)
+
+    if isinstance(obs_key, list) and len(obs_key) == 1:
+        obs_key = obs_key[0]
+
+    if (n_out is not None and n_per_group is not None) or (n_out is None and n_per_group is None):
+        raise ValueError("Pleasy specify either 'n_per_group' or 'n_out'.")
+
+    ###########################################
+    # helper functions
+    def _n_per_group_lower(sc, rm) -> int:
+        return (n_out - sc) // rm
+
+    def _remaining_groups(gs, nl) -> int:
+        """Groups from at least one more cell can be added. """
+        return len(gs[gs > nl])
+
+    def _drop_rare_groups(gs, nl):
+        th = nl if rare_group_th is None else rare_group_th
+        groups_to_drop = gs[gs < th].index.get_level_values(-1)
+        drop_group_mask = gs.index.get_level_values(-1).isin(groups_to_drop)
+        return gs[~drop_group_mask]
+
+    def _sure_cells(gs, nl) -> int:
+        return gs[gs <= nl].sum()
+    ###########################################
+
+
+    # determine how many cells to sample per group
+    if obs_key is not None:
+        # if isinstance(obs_key, list):
+        #     a_cat = pd.DataFrame(index=a.obs.index)
+        #     for key in obs_key:
+        #         a_cat[key] = a.obs[key].astype("category")
+        # else:
+        #     a_cat = a.obs[obs_key].astype_category
+        group_sizes = a.obs[obs_key].value_counts()
+        # group_sizes.reindex(a.obs[obs_key].unique(), fill_value=0)
+        if n_out is not None:
+            # initialize stats:
+            sure_cells = 0
+            remaining_groups = len(group_sizes)
+            # first calulation of lower border
+            n_per_group_lower = _n_per_group_lower(sure_cells, remaining_groups)
+            if drop_rare_groups:
+                group_sizes = _drop_rare_groups(group_sizes, n_per_group_lower)
+            # update stats
+            sure_cells = _sure_cells(group_sizes, n_per_group_lower)
+            # stays 0 if drop_rare_groups=True and rare_group_th is not None
+            remaining_groups = _remaining_groups(group_sizes, n_per_group_lower)
+            # iteratively drop groups with fewer cells than whished and recalculate the sample size for the remaining
+            # groups
+            while ((n_per_group_lower * remaining_groups) + sure_cells) < (n_out - remaining_groups):
+                n_per_group_lower = _n_per_group_lower(sure_cells, remaining_groups)
+                if drop_rare_groups:
+                    group_sizes = _drop_rare_groups(group_sizes, n_per_group_lower)
+                sure_cells = _sure_cells(group_sizes, n_per_group_lower)
+                remaining_groups = _remaining_groups(group_sizes, n_per_group_lower)
+                if remaining_groups == 0:
+                    raise ValueError("Not enough cells to sample uniformly. Try to decrease 'n_out' or use "
+                                     "'drop_rare_groups=False'.")
+
+            # fill last places randomly
+            sample_sizes = group_sizes.copy()
+            too_big_mask = group_sizes > n_per_group_lower
+            sample_sizes[too_big_mask] = n_per_group_lower
+            diff = n_out - sample_sizes.sum()
+            while not diff == 0:
+                plus_one = random.sample(list(too_big_mask[too_big_mask].index), min(diff, sum(too_big_mask)))
+                sample_sizes[plus_one] += 1
+                diff = n_out - sample_sizes.sum()
+
+        elif n_per_group is not None:
+            sample_sizes = group_sizes.copy()
+            too_big_mask = group_sizes > n_per_group
+            sample_sizes[too_big_mask] = n_per_group
+            if drop_rare_groups:
+                sample_sizes = _drop_rare_groups(sample_sizes, n_per_group)
+
+        # assemble over goups
+        sampling_mask = pd.DataFrame(index=a.obs.index)
+        sampling_mask["sampling"] = False
+        obs = a.obs[obs_key].reset_index().set_index(obs_key)
+        keep_idx = pd.Series(index=a.var.index, data=True)
+        for group in sample_sizes.index:
+            # group_mask = a.obs[obs_key].isin(group)
+            # group_mask = group_mask.sum(axis=1)
+            # idx = a.obs.loc(axis=0)[a.obs[key_added] == group].index
+            # idx = a.obs[a.obs[obs_key] == list(group)].index
+            idx = obs.loc[[group], "index"]
+            if len(idx) > sample_sizes[group]:
+                sample_idx = random.sample(list(idx), sample_sizes[group])
+            else:
+                sample_idx = idx
+            sampling_mask["sampling"].loc[sample_idx] = True
+
+            #  genes with no remaining counts
+            keep_idx = keep_idx & sc.pp.filter_genes(a, min_counts=1, inplace=False)[0]
+
+        # do the cell subsetting
+        a = a[sampling_mask.values, :]
+        if isinstance(obs_key, list):
+            for key in obs_key:
+                a.obs[key].cat.remove_unused_categories()
+        else:
+            a.obs[obs_key].cat.remove_unused_categories()
+
+        # do the gene subsetting
+        if not all(keep_idx):
+            if drop_unexpressed_genes:
+                a = a[:, keep_idx].copy()
+                if verbosity > 0:
+                    print(f"After sampling cells, {sum(~keep_idx)} genes were dropped from adata "
+                          f"due to no remaining counts.")
+            else:
+                if verbosity > 0:
+                    warnings.warn(f"After sampling, {sum(~keep_idx)} genes have no remaining counts. Consider using "
+                                  f"'drop_unexpressed_genes=True'.")
+    else:
+        a = a[random.sample(range(a.n_obs), n_out),:]
+
+
+    if verbosity > 1:
+        if  isinstance(obs_key, list):
+            for key in obs_key:
+                print(a.obs[key].cat.categories)
+                print(a.obs[key].value_counts())
+        else:
+            print(a.obs[obs_key].cat.categories)
+            print(a.obs[obs_key].value_counts())
+
+    if copy:
+        return a
+
+
+def cell_type_intersect(adata, ct_key, batch_key):
+
+    assert ct_key in adata.obs_keys()
+    assert batch_key in adata.obs_keys()
+
+    batches = adata.obs[batch_key].unique()
+    celltypes = [set(adata.obs[ct_key][adata.obs[batch_key] == batch]) for batch in batches]
+    ct_intersection = set.intersection(*celltypes)
+
+    return adata[adata.obs[ct_key].isin(ct_intersection)].copy()

@@ -1,25 +1,23 @@
+import itertools
 import json
 import os
 import pickle
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union, cast
-
 import numpy as np
 import pandas as pd
 import scanpy as sc
-from rich.console import RichCast
-from scipy.sparse import issparse
-
 import spapros.evaluation.evaluation as ev
 import spapros.selection.selection_methods as select
 import spapros.util.util as util
+from rich.console import RichCast
+from scipy.sparse import issparse
 from spapros.plotting import plot as pl
-from spapros.util.util import (
-    dict_to_table,
-    filter_marker_dict_by_penalty,
-    filter_marker_dict_by_shared_genes,
-)
+from spapros.util.util import dict_to_table
+from spapros.util.util import filter_marker_dict_by_penalty
+from spapros.util.util import filter_marker_dict_by_shared_genes
+
 
 # from tqdm.autonotebook import tqdm
 
@@ -75,6 +73,11 @@ class ProbesetSelector:  # (object)
             genes can be subsetted for selection via :attr:`genes_key`.
         celltype_key:
             Key in ``adata.obs`` with celltype annotations.
+        batch_key:
+            Key in ``adata.obs`` with batch annotations. Only necessary if ``batch_aware=True``.
+        batch_aware:
+            If `True`, use batch aware methods for gene selection. If ``adata.obs[batch_key]`` does not exists,
+            falling back to ``batch_aware=False``.
         genes_key:
             Key in ``adata.var`` for preselected genes (typically 'highly_variable_genes').
         n:
@@ -164,14 +167,16 @@ class ProbesetSelector:  # (object)
                - if only partial results were generated, make sure that the initialization arguments are the same as
                  before!
         n_jobs:
-            Number of cpus for multi processing computations. Set to -1 to use all available cpus.
-
+            Number of cpus for multiprocessing computations. Set to -1 to use all available cpus.
 
     Attributes:
         adata:
             Data with log normalised counts in ``adata.X``.
         ct_key:
             Key in ``adata.obs`` with celltype annotations.
+        batch_key:
+            Key in ``adata.obs`` containing batch annotations or `None`. If not `None`, selection is done in a
+            batch-aware manner.
         g_key:
             Key in ``adata.var`` for preselected genes (typically `'highly_variable_genes'`).
         n:
@@ -305,7 +310,6 @@ class ProbesetSelector:  # (object)
                 * **nr_of_celltypes**
                     Number of primary trees i.e. cell types in which the gene occurs.
 
-
     """
 
     # TODO:
@@ -317,7 +321,8 @@ class ProbesetSelector:  # (object)
         self,
         adata: sc.AnnData,
         celltype_key: str,
-        genes_key: str = "highly_variable",
+        batch_key: str = None,
+        genes_key: Optional[str] = "highly_variable",
         n: Optional[int] = None,
         preselected_genes: List[str] = [],
         prior_genes: List[str] = [],
@@ -402,7 +407,7 @@ class ProbesetSelector:  # (object)
         self.DE_penalties = DE_penalties
         self.m_penalties_adata_celltypes = m_penalties_adata_celltypes
         self.m_penalties_list_celltypes = m_penalties_list_celltypes
-        # Set hyper parameters of selection steps
+        # Set hyperparameters of selection steps
         self.pca_selection_hparams = self._get_hparams(pca_selection_hparams, subject="pca_selection")
         self.DE_selection_hparams = self._get_hparams(DE_selection_hparams, subject="DE_selection")
         self.forest_hparams = self._get_hparams(forest_hparams, subject="forest")
@@ -411,6 +416,7 @@ class ProbesetSelector:  # (object)
         self.m_selection_hparams = self._get_hparams(marker_selection_hparams, subject="marker_selection")
 
         self.verbosity = verbosity
+
         self.seed = 0
         # TODO: there are probably a lot of places where the seed needs to be provided that are not captured yet.
         self.save_dir = save_dir
@@ -487,6 +493,13 @@ class ProbesetSelector:  # (object)
         # self.disable_pbars = self.verbosity < 1
         self.progress = util.NestedProgress()  # redirect_stdout=False
 
+        # batch awareness
+        if batch_key is not None and batch_key in adata.obs:
+            self.batch_key = batch_key
+        else:
+            self.batch_key = None
+
+
     def select_probeset(self) -> None:
         """Run full selection procedure.
 
@@ -508,6 +521,7 @@ class ProbesetSelector:  # (object)
 
         """
         assert isinstance(self.progress, RichCast)
+        self.progress.stop()
         with self.progress:
 
             if self.verbosity > 0:
@@ -559,16 +573,15 @@ class ProbesetSelector:  # (object)
     def _pca_selection(self) -> None:
         """Select genes based on pca loadings."""
         if self.selection["pca"] is None:
-            self.selection["pca"] = select.select_pca_genes(
-                self.adata[:, self.genes],
-                self.n_pca_genes,
-                penalty_keys=self.pca_penalties,
-                inplace=False,
-                progress=self.progress,
-                level=1,
-                verbosity=self.verbosity,
-                **self.pca_selection_hparams,
-            )
+            self.selection["pca"] = select.select_pca_genes(self.adata[:, self.genes],
+                                                            self.n_pca_genes,
+                                                            penalty_keys=self.pca_penalties,
+                                                            batch_key=self.batch_key,
+                                                            inplace=False,
+                                                            progress=self.progress,
+                                                            level=1,
+                                                            verbosity=self.verbosity,
+                                                            **self.pca_selection_hparams)
             assert self.selection["pca"] is not None
             self.selection["pca"] = self.selection["pca"].sort_values("selection_ranking")
 
@@ -591,6 +604,7 @@ class ProbesetSelector:  # (object)
                 self.adata[:, self.genes],
                 obs_key=self.ct_key,
                 **self.DE_selection_hparams,
+                batch_key=self.batch_key,
                 penalty_keys=self.DE_penalties,
                 groups=self.celltypes,
                 reference="rest",
@@ -660,6 +674,7 @@ class ProbesetSelector:  # (object)
                 self.adata[:, self.genes],
                 self.forest_results["DE_prior_forest"],
                 ct_key=self.ct_key,
+                batch_key=self.batch_key,
                 penalty_keys=self.DE_penalties,
                 tree_clf_kwargs=self.forest_hparams,
                 verbosity=self.verbosity,
@@ -704,9 +719,11 @@ class ProbesetSelector:  # (object)
         # TODO
         #  - eventually put this "test set size"-test somewhere (ideally at __init__)
 
+        # Train final forests by adding genes from the DE_baseline forest for celltypes with low performance
         if self.progress and self.verbosity > 0:
             final_forest_task = self.progress.add_task("Train final forests...", total=3, level=1)
 
+        # Train forest on pre/prior/pca selected genes
         if not self.forest_results["pca_prior_forest"]:
             pca_prior_forest_genes = (
                 self.selection["pre"]
@@ -731,18 +748,16 @@ class ProbesetSelector:  # (object)
                 task="Train forest on pre/prior/pca selected genes...",
                 **self.forest_hparams,
             )
-            # if self.verbosity > 2:
-            #     print("\t\t ...finished.")
+
         else:
             if self.progress and 2 * self.verbosity >= 2:
                 self.progress.add_task(
                     "Forest on pre/prior/pca selected genes already trained...", only_text=True, level=2
                 )
 
+        # Iteratively add genes from DE_baseline_forest...
         if self.progress and self.verbosity > 0:
             self.progress.advance(final_forest_task)
-        # if self.verbosity > 1:
-        #     print("\t Iteratively add genes from DE_baseline_forest...")
         if (not self.forest_results["forest"]) or (not self.forest_clfs["forest"]):
             save_forest: Union[str, bool] = self.forest_results_paths["forest"] if self.save_dir else False
             assert isinstance(self.forest_results["pca_prior_forest"], list)
@@ -764,15 +779,12 @@ class ProbesetSelector:  # (object)
                 task="Iteratively add genes from DE_baseline_forest...",
             )
             assert isinstance(forest_results[0], list)
-            # assert isinstance(forest_results[1], dict)
             assert len(forest_results) == 2
             self.forest_results["forest"] = forest_results[0]
             self.forest_clfs["forest"] = forest_results[1]
             if self.save_dir:
                 with open(self.forest_clfs_paths["forest"], "wb") as f:
                     pickle.dump(self.forest_clfs["forest"], f)
-            # if self.verbosity > 2:
-            #     print("\t\t ...finished.")
         else:
             if self.progress and 2 * self.verbosity >= 2:
                 self.progress.add_task("Genes from DE_baseline_forest were already added...", only_text=True, level=2)
@@ -1190,8 +1202,8 @@ class ProbesetSelector:  # (object)
         genes = []
         cts = []
         importances = []
-        for ct in self.forest_results["forest"][2].keys():
-            tmp = self.forest_results["forest"][2][ct]["0"]
+        for ct in self.forest_results["forest"][2].keys():  # type: ignore
+            tmp = self.forest_results["forest"][2][ct]["0"]  # type: ignore
             tmp = tmp.loc[tmp > 0].sort_values(ascending=False)
             genes += tmp.index.to_list()
             cts += [ct for _ in range(len(tmp))]
@@ -1246,13 +1258,13 @@ class ProbesetSelector:  # (object)
             The ``forest_hparams`` are given in the class init definition as ``{"n_trees": 50, "subsample": 1000,
             "test_subsample": 3000}``. If the class is called with ``forest_hparams={"n_trees": 100}`` we would actually
             like to have ``{"n_trees": 100, "subsample": 1000, "test_subsample": 3000}``.
-            The last two are added by this functions.
+            The last two are added by this function.
 
         Args:
             new_params:
                 Dictionary with custom hyperparameters for the selection method :attr:`subject`.
             subject:
-                Type of hyper parameters of interest.
+                Type of hyperparameters of interest.
 
         Returns:
             dict:
@@ -1262,9 +1274,11 @@ class ProbesetSelector:  # (object)
 
         # Here we define default values
         if subject == "pca_selection":
-            defaults: Dict[str, Any] = {}
+            defaults: Dict[str, Any] = {
+                "batch_aggr_fun": np.mean
+            }
         elif subject == "DE_selection":
-            defaults = {"n": 3, "per_group": True}
+            defaults = {"n": 3, "per_group": True, "batch_aggr_fun": np.sum}
         elif subject == "forest":
             defaults = {"n_trees": 50, "subsample": 1000, "test_subsample": 3000}
         elif subject == "forest_DE_basline":
@@ -1275,6 +1289,7 @@ class ProbesetSelector:  # (object)
                 "max_step": 3,
                 "min_outlier_dif": 0.02,
                 "n_terminal_repeats": 3,
+                "batch_aggr_fun": np.sum
             }
         elif subject == "add_forest_genes":
             defaults = {"n_max_per_it": 5, "performance_th": 0.02, "importance_th": 0}
@@ -1444,16 +1459,16 @@ class ProbesetSelector:  # (object)
     def plot_histogram(
         self,
         x_axis_keys: Dict[str, str] = None,
-        selections: List[Literal["pca", "DE", "marker"]] = None,
+        selections: List[str] = None,
         penalty_keys: Dict = None,
         unapplied_penalty_keys: Dict = None,
-        background_key: Union[bool, str] = True,
+        background_key: Union[bool, str, None] = True,
         **kwargs,
     ) -> None:
         """Plot histograms of (basic) selections under given penalties.
 
         The full selection procedure consists of steps partially based on basic score based selection procedures.
-        This is an interactive plotting function to investigate if the constructed penalty kernels are well chosen.
+        This is an interactive plotting function to investigate if the constructed penalty kernels are well-chosen.
 
         Note:
             The green line shows a linear interpolation of the penalty scores which is only an approximation of the
@@ -1485,8 +1500,8 @@ class ProbesetSelector:  # (object)
                 Same as ``penalty_keys`` but for penalties that were not applied to the selection.
             background_key:
                 Key in ``adata.var`` for preselected genes (typically `'highly_variable_genes'`) to plot as background
-                histogram . If `True` (default), :attr:`g_key` is used. If `None` no background is plottet. If `'all'`, all genes
-                are used as background.
+                histogram . If `True` (default), :attr:`g_key` is used. If `None` no background is plottet. If `'all'`,
+                all genes are used as background.
             kwargs:
                 Further arguments for :func:`.selection_histogram`.
 
@@ -1540,6 +1555,8 @@ class ProbesetSelector:  # (object)
             # default penalty keys:
             elif penalty_keys[selection] is None and selection in PENALTY_KEYS:
                 penalty_keys[selection] = PENALTY_KEYS[selection]
+                for penalty_key in penalty_keys[selection]:
+                    x_axis_keys[penalty_key] = X_AXIS_KEYS[penalty_key]
 
             # no unapplied penalties
             if selection not in unapplied_penalty_keys:
@@ -1548,14 +1565,13 @@ class ProbesetSelector:  # (object)
             # default unapplied penalties:
             elif unapplied_penalty_keys[selection] is None and selection in UNAPPLIED_PENALTY_KEYS:
                 unapplied_penalty_keys[selection] = UNAPPLIED_PENALTY_KEYS[selection]
+                for penalty_key in unapplied_penalty_keys[selection]:
+                    x_axis_keys[penalty_key] = X_AXIS_KEYS[penalty_key]
 
-            penalty_labels[selection] = {
-                **{
-                    p_name: "partially applied" if selection == "marker" else "penalty"
-                    for p_name in penalty_keys[selection]
-                },
-                **{p_name: "unapplied penal." for p_name in unapplied_penalty_keys[selection]},
-            }
+            penalty_labels[selection] = {**{p_name: "partially applied" if selection == "marker" else "penalty" for
+                                            p_name in penalty_keys[selection]},
+                                         **{p_name: "unapplied\npenal." for p_name in
+                                            unapplied_penalty_keys[selection]}}
 
             # plot with penalties:
             penalty_keys[selection] = penalty_keys[selection] + unapplied_penalty_keys[selection]
@@ -1584,7 +1600,6 @@ class ProbesetSelector:  # (object)
         **kwargs,
     ) -> None:
         """Plot correlation matrix of selected genes
-
 
         Args:
             selections: Plot the coexpression of
@@ -1640,7 +1655,11 @@ class ProbesetSelector:  # (object)
         assert isinstance(selections, list)
         for selection in selections:
 
-            # Get data of selected genes (overlap between adata and self.selection[selection] and
+            # check selection:
+            if selection not in self.selection:  # or selection not in SELECTIONS:
+                raise ValueError(f"{selection} selection can't be plottet because no results were found.")
+
+            # get data of selected genes (overlap between adata and self.selection[selection] and
             # self.probeset["selection"]):
             a = self.adata.copy()
             if isinstance(self.selection[selection], list):
@@ -1753,15 +1772,15 @@ class ProbesetSelector:  # (object)
 
         # prepare df
         if celltypes is None:
-            celltypes = self.celltypes
-        df["decision_celltypes"] = df[celltypes].apply(lambda row: list(row[row == True].index), axis=1)
+            celltypes = [ct for ct in self.celltypes if ct in df.columns]
+        df["decision_celltypes"] = df[celltypes].apply(lambda row: list(row[row is True].index), axis=1)
         if add_marker_genes and (self.selection["marker"] is not None):
             df["marker_celltypes"] = [self.selection["marker"]["celltype"][gene] for gene in df.index]
 
         # check if embedding, neighbors, pca already in adata
         redo_umap = (adata.obsm is None) or (basis not in adata.obsm)
         # try:
-        #     # check params
+        #    # check params
         #     for param, value in adata.uns[basis]["params"].items():
         #         if value != umap_params[param]:
         #             redo_umap = True
@@ -1884,118 +1903,233 @@ class ProbesetSelector:  # (object)
 
         pl.gene_overlap(selection_df=selection_df, **kwargs)
 
-    def plot_explore_constraint(
+    # def plot_explore_constraint(
+    #     self,
+    #     selection_method: str = "pca_selection",
+    #     selection_params: dict = None,
+    #     background_key: str = "highly_variable",
+    #     x_axis_key: str = "quantile_0.99",
+    #     penalty_kernels: List[Callable] = None,
+    #     factors: List[float] = None,
+    #     upper: float = 1,
+    #     lower: float = 0,
+    #     **kwargs
+    # ):
+    #     """Plot histogram of quantiles for selected genes for different penalty kernels.
+    #
+    #     Args:
+    #         selection_method:
+    #             Selection method to explore. Available are:
+    #
+    #                 - "pca_selection"
+    #                 - "DE_selection"
+    #                 - "marker"
+    #
+    #         selection_params:
+    #             Hyperparameter for the respective gene selection.
+    #         background_key:
+    #             Key of column in ``adata.var`` containing the values to be plottet as background.
+    #         x_axis_key:
+    #             Key of column in ``adata.var`` containing the values to be plottet.
+    #         penalty_kernels:
+    #             Any penalty kernel. If None, :func:`.plateau_penalty_kernel` is used to create three gaussian
+    #             plateau penalty kernels with different variances. Only then, ``factors,``, ``lower`` and ``upper`` are
+    #             used.
+    #         factors:
+    #             Factors for the variance for creating a gaussian penalty kernel.
+    #         lower:
+    #             Lower border above which the kernel is 1.
+    #         upper:
+    #             Upper boder below which the kernel is 1.
+    #         **kwargs:
+    #             Further arguments for :func:`.explore_constraint`.
+    #
+    #     Returns:
+    #         Figure can be shown (default `True`) and stored to path (default `None`).
+    #         Change this with `show` and `save` in ``kwargs``.
+    #     """
+    #
+    #     # TODO:
+    #     #  1) Fix explore_constraint plot. The following circular import is causing problems atm:
+    #     #     DONE: moved parts of this method to selector.plot_expore_constraint --> this solves the problem
+    #     #  2) How to generalize the plotting function, support:
+    #     #     - any selection method with defined hyperparameters --> DONE --> add more
+    #     #     - any penalty kernel --> DONE --> test
+    #     #     - any key to be plotted (not only quantiles) --> DONE --> test
+    #
+    #     SELECTION_METHODS: Dict[str, Callable] = {
+    #         "pca_selection": select.select_pca_genes,
+    #         "DE_selection": select.select_DE_genes,
+    #     }
+    #
+    #     if selection_method not in SELECTION_METHODS:
+    #         raise ValueError(f"Selection with method {selection_method} is not available.")
+    #
+    #     if selection_params is None:
+    #         selection_params = {}
+    #
+    #     selection_params = self._get_hparams(new_params=selection_params, subject=selection_method)
+    #
+    #     if factors is None:
+    #         factors = [10, 1, 0.1]
+    #
+    #     if penalty_kernels is None:
+    #         penalty_kernels = [util.plateau_penalty_kernel(var=[factor * 0.1, factor * 0.5], x_min=np.array(lower),
+    #                                                        x_max=np.array(upper))
+    #                            for factor in factors]
+    #
+    #     a = []
+    #     selections_tmp = []
+    #     for i, factor in enumerate(factors):
+    #
+    #         if background_key not in self.adata.var:
+    #             raise ValueError(f"Can't plot background histogram because {background_key} was not found.")
+    #         a.append(self.adata[:, self.adata.var[background_key]].copy())
+    #
+    #         if x_axis_key not in a[i].var:
+    #             raise ValueError(f"No column {x_axis_key} in adata.var found.")
+    #
+    #         a[i].var["penalty_expression"] = penalty_kernels[i](a[i].var[x_axis_key])
+    #         selections_tmp.append(
+    #             SELECTION_METHODS[selection_method](
+    #                 a[i],
+    #                 n=100,
+    #                 **selection_params,
+    #                 penalty_keys=["penalty_expression"],
+    #                 inplace=False,
+    #                 verbosity=self.verbosity,
+    #             )
+    #         )
+    #         print(f"N genes selected: {np.sum(selections_tmp[i]['selection'])}")
+    #
+    #     pl.explore_constraint(a,
+    #                           selections_tmp,
+    #                           penalty_kernels,
+    #                           factors=factors,
+    #                           x_axis_key=x_axis_key,
+    #                           upper=upper,
+    #                           lower=lower,
+    #                           **kwargs
+    #                           )
+
+    def plot_masked_dotplot(
         self,
-        selection_method: str = "pca_selection",
-        selection_params: dict = None,
-        background_key: str = "highly_variable",
-        x_axis_key: str = "quantile_0.99",
-        penalty_kernels: List[Callable] = None,
-        factors: List[float] = None,
-        upper: float = 1,
-        lower: float = 0,
+        imp_threshold: float = 0.05,
+        celltypes: Optional[List[str]] = None,
+        n_genes: Optional[int] = None,
+        comb_markers_only: bool = False,
+        markers_only: bool = False,
         **kwargs,
     ):
-        """Plot histogram of quantiles for selected genes for different penalty kernels.
+        """Wrapper for an annotated dotplot.
 
         Args:
-            selection_method:
-                Selection method to explore. Available are:
-
-                    - "pca_selection"
-                    - "DE_selection"
-                    - "marker"
-
-            selection_params:
-                Hyperparameter for the respective gene selection.
-            background_key:
-                Key of column in ``adata.var`` containing the values to be plottet as background.
-            x_axis_key:
-                Key of column in ``adata.var`` containing the values to be plottet.
-            penalty_kernels:
-                Any penalty kernel. If None, :func:`.plateau_penalty_kernel` is used to create three gaussian
-                plateau penalty kernels with different variances. Only then, ``factors,``, ``lower`` and ``upper`` are
-                used.
-            factors:
-                Factors for the variance for creating a gaussian penalty kernel.
-            lower:
-                Lower border above which the kernel is 1.
-            upper:
-                Upper boder below which the kernel is 1.
+            imp_threshold:
+                Show genes as combinatorial marker only for those genes with importance > ``imp_threshold``.
+            celltypes:
+                Optional subset of celltypes (rows of dotplot).
+            n_genes:
+                Optionally plot top ``n_genes`` genes.
+            comb_markers_only:
+                Whether to plot only genes that are combinatorial markers for the plotted cell types. (can becombined
+                with markers_only, in that case markers that are not comb markers are also shown)
+            markers_only:
+                Whether to plot only genes that are markers for the plotted cell types. (can be combined with
+                ``comb_markers_only``, in that case comb markers that are not markers are also shown)
             **kwargs:
-                Further arguments for :func:`.explore_constraint`.
 
         Returns:
             Figure can be shown (default `True`) and stored to path (default `None`).
             Change this with `show` and `save` in ``kwargs``.
+
+        Example:
+            (Takes a few minutes to calculate)
+            .. code-block:: python
+                import spapros as sp
+                adata = sp.ut.get_processed_pbmc_data()
+                selector = sp.se.ProbesetSelector(adata, "celltype", n=30, verbosity=0)
+                selector.select_probeset()
+                selector.plot_masked_dotplot()
+            .. image:: ../../docs/plot_examples/masked_dotplot.png
+
         """
 
-        # TODO:
-        #  1) Fix explore_constraint plot. The following circular import is causing problems atm:
-        #     DONE: moved parts of this method to selector.plot_expore_constraint --> this solves the problem
-        #  2) How to generalize the plotting function, support:
-        #     - any selection method with defined hyperparameters --> DONE --> add more
-        #     - any penalty kernel --> DONE --> test
-        #     - any key to be plotted (not only quantiles) --> DONE --> test
+        # celltypes, possible origins:
+        # - adata.obs[ct_key] (could include cts not used for selection)
+        # - celltypes for selection (including markers, could include cts which are not in adata.obs[ct_key])
+        # --> pool all together... order?
 
-        SELECTION_METHODS: Dict[str, Callable] = {
-            "pca_selection": select.select_pca_genes,
-            "DE_selection": select.select_DE_genes,
-        }
+        adata = self.adata
+        ct_key = self.ct_key
 
-        if selection_method not in SELECTION_METHODS:
-            raise ValueError(f"Selection with method {selection_method} is not available.")
+        if celltypes is not None:
+            cts = celltypes
+            adata = adata[adata.obs[ct_key].isin(celltypes)].copy()
+            # a.obs[ct_key] = a.obs[ct_key].astype(str).astype("category")
+        else:
+            # Cell types from adata
+            cts = adata.obs[ct_key].unique().tolist()
+            # Cell types from marker list only
+            if "celltypes_marker" in self.probeset:
+                tmp = []
+                for markers_celltypes in self.probeset["celltypes_marker"].str.split(","):
+                    tmp += markers_celltypes
+                tmp = np.unique(tmp).tolist()
+                if "" in tmp:
+                    tmp.remove("")
+                cts += [ct for ct in tmp if ct not in cts]
 
-        if selection_params is None:
-            selection_params = {}
+        # Get selected genes that are also in adata
+        selected_genes = [
+            g for g in self.probeset[self.probeset["selection"]].index.tolist() if g in adata.var_names
+        ]
 
-        selection_params = self._get_hparams(new_params=selection_params, subject=selection_method)
+        # Get tree genes
+        tree_genes = {}
+        assert isinstance(self.forest_results["forest"], list)
+        assert len(self.forest_results["forest"]) == 3
+        assert isinstance(self.forest_results["forest"][2], dict)
+        for ct, importance_tab in self.forest_results["forest"][2].items():
+            if ct in cts:
+                tree_genes[ct] = importance_tab["0"].loc[importance_tab["0"] > imp_threshold].index.tolist()
+                tree_genes[ct] = [g for g in tree_genes[ct] if g in selected_genes]
 
-        if factors is None:
-            factors = [10, 1, 0.1]
+        # Get markers
+        marker_genes: Dict[str, list] = {ct: [] for ct in cts}
+        for ct in cts:
+            for gene in self.probeset[self.probeset["selection"]].index:
+                if ct in self.probeset.loc[gene, "celltypes_marker"].split(",") and (gene in adata.var_names):
+                    marker_genes[ct].append(gene)
+            marker_genes[ct] = [g for g in marker_genes[ct] if g in selected_genes]
 
-        if penalty_kernels is None:
-            penalty_kernels = [
-                util.plateau_penalty_kernel(
-                    var=[factor * 0.1, factor * 0.5], x_min=np.array(lower), x_max=np.array(upper)
-                )
-                for factor in factors
-            ]
+        # Optionally subset genes:
+        # Subset to combinatorial markers of shown celltypes only
+        if comb_markers_only or markers_only:
+            allowed_genes = []
+            if comb_markers_only:
+                allowed_genes += list(itertools.chain(*[tree_genes[ct] for ct in tree_genes.keys()]))
+            if markers_only:
+                allowed_genes += list(itertools.chain(*[marker_genes[ct] for ct in marker_genes.keys()]))
+            selected_genes = [g for g in selected_genes if g in allowed_genes]
+        # Subset to show top n_genes only
+        if n_genes:
+            selected_genes = selected_genes[: min(n_genes, len(selected_genes))]
+        # Filter (combinatorial) markers by genes that are not in the selected genes
+        for ct in cts:
+            marker_genes[ct] = [g for g in marker_genes[ct] if g in selected_genes]
+        for ct in tree_genes.keys():
+            tree_genes[ct] = [g for g in tree_genes[ct] if g in selected_genes]
 
-        a = []
-        selections_tmp = []
-        for i, _factor in enumerate(factors):
+        further_celltypes = [ct for ct in cts if ct not in adata.obs[ct_key].unique()]
 
-            if background_key not in self.adata.var:
-                raise ValueError(f"Can't plot background histogram because {background_key} was not found.")
-            a.append(self.adata[:, self.adata.var[background_key]].copy())
-
-            if x_axis_key not in a[i].var:
-                raise ValueError(f"No column {x_axis_key} in adata.var found.")
-
-            a[i].var["penalty_expression"] = penalty_kernels[i](a[i].var[x_axis_key])
-            selections_tmp.append(
-                SELECTION_METHODS[selection_method](
-                    a[i],
-                    n=100,
-                    **selection_params,
-                    penalty_keys=["penalty_expression"],
-                    inplace=False,
-                    verbosity=self.verbosity,
-                )
-            )
-            print(f"N genes selected: {np.sum(selections_tmp[i]['selection'])}")
-
-        pl.explore_constraint(
-            a,
-            selections_tmp,
-            penalty_kernels,
-            factors=factors,
-            x_axis_key=x_axis_key,
-            upper=upper,
-            lower=lower,
-            **kwargs,
-        )
+        pl.masked_dotplot(
+            self.adata,
+            var_names=selected_genes,
+            groupby=ct_key,
+            tree_genes=tree_genes,
+            marker_genes=marker_genes,
+            further_celltypes=further_celltypes,
+            **kwargs)
 
     def info(self) -> None:
         """Print info."""
@@ -2005,9 +2139,9 @@ class ProbesetSelector:  # (object)
 def select_reference_probesets(
     adata: sc.AnnData,
     n: int,
-    genes_key: str = "highly_variable",
+    genes_key: Optional[str] = "highly_variable",
     obs_key: str = "celltype",
-    methods: Union[List[str], Dict[str, Dict]] = ["PCA", "DE", "HVG", "random"],
+    methods: Union[List[str], Dict[str, Dict]] = ["PCA", "PCAX", "DE", "DEX", "HVG", "random"],
     seeds: List[int] = [0],
     verbosity: int = 2,
     save_dir: Union[str, None] = None,
@@ -2020,15 +2154,17 @@ def select_reference_probesets(
         n:
             Number of selected genes.
         genes_key:
-            adata.var key for subset of preselected genes to run the selections on (typically 'highly_variable_genes').
+            Key of ``adata.var`` for preselected genes (typically 'highly_variable_genes').
         obs_key:
             Only required for method 'DE'. Column name of `adata.obs` for which marker scores are calculated.
         methods:
-            Methods used for selections. Supported methods and default are `['PCA', 'DE', 'HVG', 'random']`. To specify
-            hyperparameters of the methods provide a dictionary, e.g.::
+            Methods used for selections. Supported methods and default are
+            `['PCA', 'PCAX' 'DE', 'DEX', 'HVG', 'random']`. To specify hyperparameters of the methods provide a
+            dictionary, e.g.::
 
                 {
                     'DE':{},
+                    'DEX': {}
                     'PCA':{'n_pcs':30},
                     'HVG':{},
                     'random':{},
@@ -2050,7 +2186,9 @@ def select_reference_probesets(
     # Supported selection functions
     selection_fcts: Dict[str, Callable] = {
         "PCA": select.select_pca_genes,
+        "PCAX": select.select_pca_genes,
         "DE": select.select_DE_genes,
+        "DEX": select.select_DE_genes,
         "random": select.random_selection,
         "HVG": select.select_highly_variable_features,
     }
@@ -2064,8 +2202,28 @@ def select_reference_probesets(
     for method in methods:
         if method not in selection_fcts:
             print(f"Method {method} is not available. Supported methods are {[key for key in selection_fcts]}.")
-            del methods[method]
+            # del methods[method]
     methods = {m: methods[m] for m in methods if m in selection_fcts}
+    if "DEX" in methods:
+        if "batch_key" in methods["DEX"]:
+            batch_key = methods["DEX"]["batch_key"]
+        else:
+            batch_key = "batch"
+        if batch_key in adata.obs:
+            methods["DEX"]["batch_key"] = batch_key
+        else:
+            print(f"Skipping DEX reference selection because {batch_key} not in adata.obs.")
+            del methods["DEX"]
+    if "PCAX" in methods:
+        if "batch_key" in methods["PCAX"]:
+            batch_key = methods["PCAX"]["batch_key"]
+        else:
+            batch_key = "batch"
+        if batch_key in adata.obs:
+            methods["PCAX"]["batch_key"] = batch_key
+        else:
+            print(f"Skipping PCAX reference selection because {batch_key} not in adata.obs.")
+            del methods["PCAX"]
 
     # Create list of planed selections
     selections: List[dict] = []
@@ -2085,6 +2243,7 @@ def select_reference_probesets(
 
     # Run selections
     progress = util.NestedProgress(disable=(verbosity == 0))
+    progress.stop()
     probesets = {}
 
     with progress:
@@ -2095,8 +2254,13 @@ def select_reference_probesets(
             if verbosity > 1:
                 sel_task = progress.add_task(f"Selecting {s['name']} genes...", total=1, level=2)
 
+            if genes_key is not None:
+                a = adata[:, adata.var[genes_key]]
+            else:
+                a = adata.copy()
+
             probesets[s["name"]] = selection_fcts[s["method"]](
-                adata[:, adata.var[genes_key]], n, inplace=False, **s["params"]
+                a, n, inplace=False, **s["params"]
             )
 
             if save_dir:

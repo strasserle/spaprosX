@@ -1,9 +1,12 @@
 import random
-
 import pandas as pd
 import pytest
 
 from spapros import se
+from spapros.selection import select_pca_genes
+import scanpy as sc
+from spapros.selection.selection_methods import van_elteren_test
+import numpy as np
 
 
 @pytest.mark.parametrize("genes_key", ["highly_variable", None])
@@ -30,6 +33,7 @@ def test_selection_params(
         prior_genes=prior_genes,
         n_pca_genes=n_pca_genes,
         save_dir=None,
+        verbosity=0
     )
     selector.select_probeset()
 
@@ -60,6 +64,7 @@ def test_selection_celltypes(adata_pbmc3k, celltypes, marker_list):
         forest_hparams={"n_trees": 10, "subsample": 200, "test_subsample": 400},
         save_dir=None,
         celltypes=celltypes,
+        verbosity=0
     )
     selector.select_probeset()
 
@@ -115,7 +120,7 @@ def test_selection_stable(adata_pbmc3k):
 
 
 @pytest.mark.parametrize(
-    "n, " "genes_key, " "seeds, " "verbosity, " "save_dir, " "reference_selections",
+    "n, " "genes_key, " "seeds, " "verbosity, " "save_dir, " "methods",
     [
         (
             10,
@@ -124,39 +129,39 @@ def test_selection_stable(adata_pbmc3k):
             0,
             None,
             {
-                "hvg_selection": {"flavor": "cell_ranger"},
-                "random_selection": {},
-                "pca_selection": {
+                "HVG": {"flavor": "cell_ranger"},
+                "random": {},
+                "PCA": {
                     "variance_scaled": False,
                     "absolute": True,
                     "n_pcs": 20,
                     "penalty_keys": [],
                     "corr_penalty": None,
                 },
-                "DE_selection": {"per_group": "True"},
+                "DE": {"per_group": "True"},
             },
         ),
         (
             50,
-            None,
-            None,
+            "highly_variable",
+            [],
             1,
             None,
             {
-                "hvg_selection": {"flavor": "seurat"},
-                "pca_selection": {
+                "HVG": {"flavor": "seurat"},
+                "PCA": {
                     "variance_scaled": True,
                     "absolute": False,
                     "n_pcs": 10,
                 },
-                "DE_selection": {"per_group": "False"},
+                "DE": {"per_group": "False"},
             },
         ),
-        (100, None, None, 2, "tmp_path", None),
+        (100, "highly_variable", [], 2, "tmp_path", ["PCA", "DE", "HVG", "random"]),
     ],
 )
 def test_select_reference_probesets(
-    adata_pbmc3k, n, genes_key, seeds, verbosity, save_dir, request, reference_selections
+    adata_pbmc3k, n, genes_key, seeds, verbosity, save_dir, request, methods
 ):
     se.select_reference_probesets(
         adata_pbmc3k,
@@ -165,5 +170,165 @@ def test_select_reference_probesets(
         seeds=seeds,
         verbosity=verbosity,
         save_dir=None if not save_dir else request.getfixturevalue(save_dir),
-        reference_selections=reference_selections,
+        methods=methods,
     )
+
+##################################
+## test for batch aware methods ##
+##################################
+
+
+def test_select_pca_genes_per_batch(tiny_adata_w_penalties):
+    a = tiny_adata_w_penalties
+    a.obs["batch"] = ["batch_1", "batch_2"] * (a.shape[0]//2)
+    a.obs["one_batch"] = ["one_batch"] * a.shape[0]
+
+    selection_df_X_batch = select_pca_genes(
+        a,
+        n=50,
+        penalty_keys=["expression_penalty_upper", "expression_penalty_lower"],
+        batch_key="batch",
+        corr_penalty=None,
+        inplace=False,
+    )
+
+    selection_df_one_batch = select_pca_genes(
+        a,
+        n=50,
+        penalty_keys=["expression_penalty_upper", "expression_penalty_lower"],
+        batch_key="one_batch",
+        corr_penalty=None,
+        inplace=False,
+    )
+
+    selection_df = select_pca_genes(
+        a,
+        n=50,
+        penalty_keys=["expression_penalty_upper", "expression_penalty_lower"],
+        batch_key=None,
+        corr_penalty=None,
+        inplace=False,
+    )
+
+    assert selection_df.shape == selection_df_X_batch.shape
+    assert pd.testing.assert_frame_equal(selection_df_one_batch, selection_df) is None
+
+
+def test_van_elteren_test_equals_rank_genes_groups(adata):
+    # for only one batch, both tests should be equal
+    adata = adata.copy()
+    sc.pp.filter_cells(adata, min_counts=1)
+    sc.pp.log1p(adata)
+    adata.obs["batch"] = "single_batch"
+    sc.tl.rank_genes_groups(adata, groupby="cell_type", method="wilcoxon")
+    van_elteren_test(adata, ct_key="cell_type", batch_key="batch", groups="all", reference="rest")
+    for key in list(adata.uns["rank_genes_groups"].keys())[1:]:
+        print(key)
+        for results_a, results_b in zip(adata.uns["rank_genes_groups"][key], adata.uns["rank_genes_groups_stratified"][
+            key]):
+            for value_a, value_b in zip(results_a, results_b):
+                if type(value_a) in [np.float32, np.float64] and type(value_b) in [np.float32, np.float64]:
+                    np.testing.assert_almost_equal(value_a, value_b)
+                    print(value_a, " equals ", value_b)
+                elif type(value_a) == str and type(value_b) == str:
+                    assert value_a == value_b
+                    print(value_a, " equals ", value_b)
+                else:
+                    raise ValueError("Unexpected dtype")
+
+
+def test_van_elteren_with_missing_cts():
+
+    # ct3 missing in batch2 --> no problem for one vs all (because no ct lost)
+    adata = sc.AnnData(np.random.randint(0, 100, (100, 30)))
+    sc.pp.log1p(adata)
+    adata.obs["batch"] = ["batch1"] * 50 + ["batch2"] * 50
+    adata.obs["cell_type"] = ["ct1"] * 25 + ["ct2"] * 20 + ["ct3"] * 5 + ["ct1"] * 25 + ["ct2"] * 25
+    adata.obs["cell_type"] = adata.obs["cell_type"].astype("category")
+    van_elteren_test(adata, ct_key="cell_type", batch_key="batch", groups="all", reference="rest")
+    res = adata.uns["rank_genes_groups_stratified"]
+    assert all(res["n_batches"].ct1 == 2)
+    assert all(res["n_batches"].ct2 == 2)
+    assert all(res["n_batches"].ct3 == 'non-batch-aware_case-1(1)')
+
+    # ct3 missing in batch2 --> still no problem for one vs ct3 (because batch 2 lost but no ct)
+    adata = sc.AnnData(np.random.randint(0, 100, (100, 30)))
+    sc.pp.log1p(adata)
+    adata.obs["batch"] = ["batch1"] * 50 + ["batch2"] * 50
+    adata.obs["cell_type"] = ["ct1"] * 25 + ["ct2"] * 20 + ["ct3"] * 5 + ["ct1"] * 25 + ["ct2"] * 25
+    adata.obs["cell_type"] = adata.obs["cell_type"].astype("category")
+    van_elteren_test(adata, ct_key="cell_type", batch_key="batch", groups="all", reference="ct3")
+    res = adata.uns["rank_genes_groups_stratified"]
+    assert all(res["n_batches"].ct1 == 'non-batch-aware_case-1(1)')
+    assert all(res["n_batches"].ct2 == 'non-batch-aware_case-1(1)')
+
+    # ct3 missing in batch2 and ct1 missing in batch1 --> problem for ct1 vs ct3 --> additional
+    # ct1 vs ct3 in batch 1 skipped (no ct1), in batch 2 skipped (no ct3) --> w_stats[ct1] empty --> case 1
+    # ct2 vs ct3 in batch 1 okay (vs 3), in batch 2 skipped (no ct3) --> w_stats[ct2] 1 batch
+    # ct3 vs ct3 in batch 1 --> skipped, not asked
+    # --> c1 never target --> additional non-batch-aware DE test (case 1)
+    adata = sc.AnnData(np.random.randint(0, 100, (100, 30)))
+    sc.pp.log1p(adata)
+    adata.obs["batch"] = ["batch1"] * 50 + ["batch2"] * 50
+    adata.obs["cell_type"] = ["ct1"] * 0 + ["ct2"] * 45 + ["ct3"] * 5 + ["ct1"] * 25 + ["ct2"] * 25
+    adata.obs["cell_type"] = adata.obs["cell_type"].astype("category")
+    van_elteren_test(adata, ct_key="cell_type", batch_key="batch", groups="all", reference="ct3")
+    res = adata.uns["rank_genes_groups_stratified"]
+    assert all(res["n_batches"].ct1 == "non-batch-aware_case-1(0)")
+    assert all(res["n_batches"].ct2 == 'non-batch-aware_case-1(1)')
+
+    # ct3 missing in batch2 and ct3 is the target --> no problem because all reference cts also in batch 1
+    # ct3 vs rest in batch 1 okay (vs 1, 2), in batch 2 skipped (no ct3) --> w_stats[ct3] 1 batch
+    # no other target cts requested
+    adata = sc.AnnData(np.random.randint(0, 100, (100, 30)))
+    sc.pp.log1p(adata)
+    adata.obs["batch"] = ["batch1"] * 50 + ["batch2"] * 50
+    adata.obs["cell_type"] = ["ct1"] * 5 + ["ct2"] * 40 + ["ct3"] * 5 + ["ct1"] * 25 + ["ct2"] * 25
+    adata.obs["cell_type"] = adata.obs["cell_type"].astype("category")
+    van_elteren_test(adata, ct_key="cell_type", batch_key="batch", groups=["ct3"], reference="rest")
+    res = adata.uns["rank_genes_groups_stratified"]
+    assert all(res["n_batches"].ct3 == 'non-batch-aware_case-1(1)')
+
+    # ct3 is the target, only present in batch 1, ct1 only present in batch 2 --> problem for ct3 vs ct1 --> case 2
+    # ct3 vs rest in batch 1 okay (vs 2), in batch 2 skipped (no ct3) --> w_stats[ct3] 1 batch
+    # ct 1 never reference --> additional non-batch-aware DE test (case 2)
+    adata = sc.AnnData(np.random.randint(0, 100, (100, 30)))
+    sc.pp.log1p(adata)
+    adata.obs["batch"] = ["batch1"] * 50 + ["batch2"] * 50
+    adata.obs["cell_type"] = ["ct1"] * 0 + ["ct2"] * 40 + ["ct3"] * 10 + ["ct1"] * 25 + ["ct2"] * 25
+    adata.obs["cell_type"] = adata.obs["cell_type"].astype("category")
+    van_elteren_test(adata, ct_key="cell_type", batch_key="batch", groups=["ct3"], reference="rest")
+    res = adata.uns["rank_genes_groups_stratified"]
+    assert all(res["n_batches"].ct3 == 'non-batch-aware_case-1(1)')
+
+    # multiple target cts
+    # never ct1 vs ct4 pos --> additionally test [ct1, ct2, ct3, ct4] vs [ct1, ct 4] --> merge for each cell type
+    adata = sc.AnnData(np.random.randint(0, 100, (100, 30)))
+    sc.pp.log1p(adata)
+    adata.obs["batch"] = ["batch1"] * 50 + ["batch2"] * 50
+    adata.obs["cell_type"] = ["ct1"] * 0 + ["ct2"] * 30 + ["ct3"] * 10 + ["ct4"] * 10 + \
+                             ["ct1"] * 25 + ["ct2"] * 15 + ["ct3"] * 10 + ["ct4"] * 0
+    adata.obs["cell_type"] = adata.obs["cell_type"].astype("category")
+    van_elteren_test(adata, ct_key="cell_type", batch_key="batch", groups='all', reference="rest")
+    res = adata.uns["rank_genes_groups_stratified"]
+    assert all(res["n_batches"].ct1 == 'non-batch-aware_case-1(1)')
+    assert all(res["n_batches"].ct4 == 'non-batch-aware_case-1(1)')
+    assert all(res["n_batches"].ct2 == 2)
+    assert all(res["n_batches"].ct3 == 2)
+
+#
+# def test_van_elteren_test_liver_real():
+#     adata_path = "/big/st/strasserl/MA/benchmarking/data/test_data/liver-real.h5ad"
+#     batch_key = "development_stage"
+#     adata = sc.read_h5ad(os.path.join("..", adata_path)) # real dataset
+#     van_elteren_test(adata, ct_key="cell_type", batch_key=batch_key, groups="all", reference="rest")
+
+
+
+
+
+
+
+
+
+

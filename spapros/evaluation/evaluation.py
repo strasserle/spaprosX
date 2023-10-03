@@ -5,7 +5,6 @@ import warnings
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
-
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -14,7 +13,6 @@ import scipy
 from rich.progress import Progress
 from sklearn import tree
 from sklearn.metrics import classification_report
-
 import spapros.plotting as pl
 from spapros.evaluation.metrics import (
     get_metric_default_parameters,
@@ -151,23 +149,31 @@ class ProbesetEvaluator:
         adata:
             An already preprocessed annotated data matrix. Typically we use log normalised data.
         celltype_key:
-            The adata.obs key for cell type annotations. Provide a list of keys to calculate the according metrics on
-            multiple keys.
+            The ``adata.obs`` key for cell type annotations. Provide a list of keys to calculate the according
+            metrics on multiple keys.
+        batch_key:
+            The ``adata.obs`` key for batch annotations. Provide a list of keys to calculate the batch aware metrics
+            once on every key. Note that parameters for every metric - batch key pair can be specified in
+            :attr:`metrics_params` with a key of the form `'<metric>_X_<batch_key>'`.
         results_dir:
             Directory where probeset results are saved. Defaults to `./probeset_evaluation/`. Set to `None` if you don't
             want to save results. When initializing the class we also check for existing results.
-            Note if
         scheme:
             Defines which metrics are calculated
 
                 - `'quick'` : knn, forest classification, marker correlation (if marker list given), gene correlation
-                - `'full'` : nmi, knn, forest classification, marker correlation (if marker list given), gene correlation
+                - `'full'` : nmi, knn, stratified knn, forest classification, marker correlation (if marker list given),
+                gene correlation
+                - `'batch_aware` : stratified knn
                 - `'custom'`: define metrics of intereset in :attr:`metrics`
 
-        metrics: Define which metrics are calculated. This is set automatically if :attr:`scheme != "custom"`. Supported are:
+        metrics:
+            Define which metrics are calculated. This is set automatically if :attr:`scheme != "custom"`. Supported
+            are:
 
             - `'cluster_similarity'`
             - `'knn_overlap'`
+            - `'knn_overlap_X_{batch_key}'`
             - `'forest_clfs'`
             - `'marker_corr'`
             - `'gene_corr'`
@@ -201,6 +207,8 @@ class ProbesetEvaluator:
             An already preprocessed annotated data matrix. Typically we use log normalised data.
         celltype_key:
             The ``adata.obs`` key for cell type annotations or list of keys.
+        batch_keys:
+            The ``adata.obs`` keys for batch annotation.
         dir:
             Directory where probeset results are saved.
         scheme:
@@ -219,6 +227,7 @@ class ProbesetEvaluator:
             Verbosity level.
         n_jobs:
             Number of CPUs for multi processing computations. Set to `-1` to use all available CPUs.
+        verbosity:
             Verbosity level.
         shared_results:
             Results of shared metric computations.
@@ -239,6 +248,7 @@ class ProbesetEvaluator:
         self,
         adata: sc.AnnData,
         celltype_key: Union[str, List[str]] = "celltype",
+        batch_key: Union[str, List[str]] = "batch",
         results_dir: Union[str, None] = "./probeset_evaluation/",
         scheme: str = "quick",
         metrics: Optional[List[str]] = None,
@@ -252,11 +262,16 @@ class ProbesetEvaluator:
 
         self.adata = adata
         self.celltype_key = celltype_key
+        self.batch_keys = self._check_batch_key(batch_key)
         self.dir: Union[str, None] = results_dir
         self.scheme = scheme
         self.marker_list = marker_list
         self.metrics_params = self._prepare_metrics_params(metrics_params)
-        self.metrics: List[str] = metrics if (scheme == "custom") else self._get_metrics_of_scheme()
+        if scheme == "custom":
+            assert isinstance(metrics, list)
+            self.metrics: List[str] = metrics
+        else:
+            self.metrics = self._get_metrics_of_scheme()
         self.ref_name = reference_name
         self.ref_dir = reference_dir if (reference_dir is not None) else self._default_reference_dir()
         self.verbosity = verbosity
@@ -342,119 +357,120 @@ class ProbesetEvaluator:
                 is set to `True` only these pre calculations are computed.
         """
 
-        try:
-            self.progress, self.started = init_progress(None, verbosity=self.verbosity, level=1)
-            if self.progress and self.verbosity > 0:
-                evaluation_task = self.progress.add_task(
-                    description="SPAPROS PROBESET EVALUATION:", only_text=True, header=True, total=0
+        if self.progress:
+            # it is possible that a progress is already active because it was not stopped earlier because of an exception
+            # it is not possible to reuse such a progress instance, so stop it here
+            self.progress.stop()
+
+        self.progress, self.started = init_progress(None, verbosity=self.verbosity, level=1)
+
+        if self.progress and self.verbosity > 0:
+            evaluation_task = self.progress.add_task(
+                description=f"SPAPROS PROBESET EVALUATION: {set_id}", only_text=True, header=True, total=0
+            )
+
+        if not pre_only:
+            self.compute_or_load_shared_results()
+
+        # Probeset specific pre computation (shared results are not needed for these)
+
+        if self.progress and self.verbosity > 0:
+            task_pre = self.progress.add_task(
+                "Probeset specific pre computations...", total=len(self.metrics), level=1
+            )
+
+        for metric in self.metrics:
+            if self.dir:
+                pre_res_file: str = self._res_file(metric, set_id, pre=True)
+                pre_res_file_isfile = os.path.isfile(pre_res_file)
+            else:
+                pre_res_file_isfile = False
+            if (self.dir is None) or (not pre_res_file_isfile):
+                self.pre_results[metric][set_id] = metric_pre_computations(
+                    genes,
+                    adata=self.adata,
+                    metric=metric,
+                    parameters=self.metrics_params[metric],
+                    progress=self.progress if self.verbosity > 1 else None,
+                    level=2,
+                    verbosity=self.verbosity,
+                )
+                if self.dir and (self.pre_results[metric][set_id] is not None):
+                    Path(os.path.dirname(self._res_file(metric, set_id, pre=True))).mkdir(
+                        parents=True, exist_ok=True
+                    )
+                    self.pre_results[metric][set_id].to_csv(self._res_file(metric, set_id, pre=True))
+            elif os.path.isfile(self._res_file(metric, set_id, pre=True)):
+
+                if self.progress and self.verbosity > 1:
+                    task_pre_load = self.progress.add_task(
+                        "Loading pre computations for " + metric + "...", total=1, level=2
+                    )
+
+                self.pre_results[metric][set_id] = pd.read_csv(
+                    self._res_file(metric, set_id, pre=True), index_col=0
                 )
 
-            if not pre_only:
-                self.compute_or_load_shared_results()
-
-            # Probeset specific pre computation (shared results are not needed for these)
+                if self.progress and self.verbosity > 1:
+                    self.progress.advance(task_pre_load)
 
             if self.progress and self.verbosity > 0:
-                task_pre = self.progress.add_task(
-                    "Probeset specific pre computations...", total=len(self.metrics), level=1
-                )
+                self.progress.advance(task_pre)
 
+        # Probeset specific computation (shared results are needed)
+
+        if self.progress and self.verbosity > 0:
+            task_final = self.progress.add_task(
+                "Final probeset specific computations...", total=len(self.metrics), level=1
+            )
+
+        if not pre_only:
             for metric in self.metrics:
-                if self.dir:
-                    pre_res_file: str = self._res_file(metric, set_id, pre=True)
-                    pre_res_file_isfile = os.path.isfile(pre_res_file)
-                else:
-                    pre_res_file_isfile = False
-                if (self.dir is None) or (not pre_res_file_isfile):
-                    self.pre_results[metric][set_id] = metric_pre_computations(
+                if (self.dir is None) or (not os.path.isfile(self._res_file(metric, set_id))):
+                    self.results[metric][set_id] = metric_computations(
                         genes,
                         adata=self.adata,
                         metric=metric,
+                        shared_results=self.shared_results[metric],
+                        pre_results=self.pre_results[metric][set_id],
                         parameters=self.metrics_params[metric],
+                        n_jobs=self.n_jobs,
                         progress=self.progress if self.verbosity > 1 else None,
                         level=2,
                         verbosity=self.verbosity,
+                        # set_id=set_id
                     )
-                    if self.dir and (self.pre_results[metric][set_id] is not None):
-                        Path(os.path.dirname(self._res_file(metric, set_id, pre=True))).mkdir(
-                            parents=True, exist_ok=True
-                        )
-                        self.pre_results[metric][set_id].to_csv(self._res_file(metric, set_id, pre=True))
-                elif os.path.isfile(self._res_file(metric, set_id, pre=True)):
+                    if self.dir:
+                        Path(os.path.dirname(self._res_file(metric, set_id))).mkdir(parents=True, exist_ok=True)
+                        self.results[metric][set_id].to_csv(self._res_file(metric, set_id))
+
+                elif os.path.isfile(self._res_file(metric, set_id, pre=False)):
 
                     if self.progress and self.verbosity > 1:
-                        task_pre_load = self.progress.add_task(
-                            "Loading pre computations for " + metric + "...", total=1, level=2
+                        task_final_load = self.progress.add_task(
+                            "Loading final computations for " + metric + "...", total=1, level=2
                         )
 
-                    self.pre_results[metric][set_id] = pd.read_csv(
-                        self._res_file(metric, set_id, pre=True), index_col=0
+                    self.results[metric][set_id] = pd.read_csv(
+                        self._res_file(metric, set_id, pre=False), index_col=0
                     )
 
                     if self.progress and self.verbosity > 1:
-                        self.progress.advance(task_pre_load)
-
-                if self.progress and self.verbosity > 0:
-                    self.progress.advance(task_pre)
-
-            # Probeset specific computation (shared results are needed)
+                        self.progress.advance(task_final_load)
 
             if self.progress and self.verbosity > 0:
-                task_final = self.progress.add_task(
-                    "Final probeset specific computations...", total=len(self.metrics), level=1
-                )
+                self.progress.advance(task_final)
 
-            if not pre_only:
-                for metric in self.metrics:
-                    if (self.dir is None) or (not os.path.isfile(self._res_file(metric, set_id))):
-                        self.results[metric][set_id] = metric_computations(
-                            genes,
-                            adata=self.adata,
-                            metric=metric,
-                            shared_results=self.shared_results[metric],
-                            pre_results=self.pre_results[metric][set_id],
-                            parameters=self.metrics_params[metric],
-                            n_jobs=self.n_jobs,
-                            progress=self.progress if self.verbosity > 1 else None,
-                            level=2,
-                            verbosity=self.verbosity,
-                        )
-                        if self.dir:
-                            Path(os.path.dirname(self._res_file(metric, set_id))).mkdir(parents=True, exist_ok=True)
-                            self.results[metric][set_id].to_csv(self._res_file(metric, set_id))
+            if update_summary:
+                # self.summary_statistics(set_ids=[set_id])
+                self.summary_statistics(set_ids=list(set(self._get_set_ids_with_results() + [set_id])))
 
-                    elif os.path.isfile(self._res_file(metric, set_id, pre=False)):
+        if self.progress and self.verbosity > 0:
+            self.progress.advance(evaluation_task)
+            self.progress.add_task(description="FINISHED\n", footer=True, only_text=True, total=0)
 
-                        if self.progress and self.verbosity > 1:
-                            task_final_load = self.progress.add_task(
-                                "Loading final computations for " + metric + "...", total=1, level=2
-                            )
-
-                        self.results[metric][set_id] = pd.read_csv(
-                            self._res_file(metric, set_id, pre=False), index_col=0
-                        )
-
-                        if self.progress and self.verbosity > 1:
-                            self.progress.advance(task_final_load)
-
-                    if self.progress and self.verbosity > 0:
-                        self.progress.advance(task_final)
-
-                if update_summary:
-                    # self.summary_statistics(set_ids=[set_id])
-                    self.summary_statistics(set_ids=list(set(self._get_set_ids_with_results() + [set_id])))
-
-            if self.progress and self.verbosity > 0:
-                self.progress.advance(evaluation_task)
-                self.progress.add_task(description="FINISHED\n", footer=True, only_text=True, total=0)
-
-            if self.progress and self.started:
-                self.progress.stop()
-
-        except Exception as error:
-            if self.progress:
-                self.progress.stop()
-            raise error
+        if self.progress and self.started:
+            self.progress.stop()
 
     def evaluate_probeset_pipeline(
         self, genes: List, set_id: str, shared_pre_results_path: List, step_specific_results: List
@@ -497,6 +513,7 @@ class ProbesetEvaluator:
                 pre_results=self.pre_results[metric][set_id],
                 parameters=self.metrics_params[metric],
                 n_jobs=self.n_jobs,
+                # set_id=set_id,
             )
             if self.dir:
                 Path(os.path.dirname(self._res_file(metric, set_id))).mkdir(parents=True, exist_ok=True)
@@ -584,26 +601,74 @@ class ProbesetEvaluator:
                 User specified parameters for the calculation of the metrics.
         """
         params = get_metric_default_parameters()
+        if self.marker_list is not None:
+            params["marker_corr"]["marker_list"] = self.marker_list
+        if self.celltype_key is not None:
+            params["forest_clfs"]["ct_key"] = self.celltype_key
+            params["knn_overlap_weighted"]["weight_key"] = self.celltype_key
+            params["knn_overlap_weighted_X"]["weight_key"] = self.celltype_key
+
+        params = self._stratify_default_parameters(params)
         for metric in params:
             if metric in new_params:
                 for param in params[metric]:
                     if param in new_params[metric]:
                         params[metric][param] = new_params[metric][param]
-        if self.marker_list is not None:
-            params["marker_corr"]["marker_list"] = self.marker_list
-        if self.celltype_key is not None:
-            params["forest_clfs"]["ct_key"] = self.celltype_key
         return params
+
+
+    def _stratify_default_parameters(self, old_params):
+        """
+
+        Args:
+            old_params:
+                Default parameters for the calculation of the metrics. Contains only one key per metric.
+
+        Returns:
+            Dictionary with one key per batch key per metric.
+
+        """
+        new_params = {}
+        for metric in old_params:
+            # all batch aware metrics are given a name ending on _X
+            if metric.endswith("_X"):
+                # self.batch_keys in adata.obs already checked in init
+                for batch_key in self.batch_keys:
+                    new_params[metric+"_"+batch_key] = old_params[metric].copy()
+                    new_params[metric+"_"+batch_key]["batch_key"] = batch_key
+            # non-batch aware metrics are simply copied
+            else:
+                new_params[metric] = old_params[metric]
+
+        return new_params
+
 
     def _get_metrics_of_scheme(
         self,
     ) -> List[str]:
         """Get the metrics according to the chosen scheme."""
 
+        if self.scheme == "batch_aware" or self.scheme == "full":
+            # add batch aware metrics if scheme not quick and batch key in adata.obs
+            batch_aware_metrics = ["knn_overlap_X", "knn_overlap_weighted_X"]
+            batch_aware_metrics_stratified = list(self._stratify_default_parameters({b: {} for b in
+                                                                                  batch_aware_metrics}).keys())
+
+        if self.scheme == "batch_aware":
+            metrics = batch_aware_metrics_stratified
+            # if no batch key was found, fall back to scheme quick
+            if len(metrics) == 0:
+                self.scheme = "quick"
+
         if self.scheme == "quick":
             metrics = ["knn_overlap", "forest_clfs", "gene_corr"]
-        elif self.scheme == "full":
-            metrics = ["cluster_similarity", "knn_overlap", "forest_clfs", "gene_corr"]
+        if self.scheme == "full":
+            metrics = ["cluster_similarity",
+                       "knn_overlap",
+                       "knn_overlap_weighted",
+                       "forest_clfs",
+                       "gene_corr"] + batch_aware_metrics_stratified
+
 
         # Add marker correlation metric if a marker list is provided
         if ("marker_corr" in self.metrics_params) and ("marker_list" in self.metrics_params["marker_corr"]):
@@ -611,6 +676,7 @@ class ProbesetEvaluator:
                 metrics.append("marker_corr")
 
         return metrics
+
 
     def _init_summary_table(self, set_ids: List[str]) -> pd.DataFrame:
         """Initialize or load table with summary results.
@@ -656,9 +722,9 @@ class ProbesetEvaluator:
         pre_str = "_pre" if pre else ""
         if dir is None:
             assert self.dir is not None
-            return os.path.join(self.dir, f"{metric}/{metric}_{self.ref_name}_{set_id}{pre_str}.csv")
+            return os.path.join(self.dir, f"{metric}", f"{metric}_{self.ref_name}_{set_id}{pre_str}.csv")
         else:
-            return os.path.join(dir, f"{metric}/{metric}_{self.ref_name}_{set_id}{pre_str}.csv")
+            return os.path.join(dir, f"{metric}", f"{metric}_{self.ref_name}_{set_id}{pre_str}.csv")
 
     def _default_reference_dir(
         self,
@@ -817,8 +883,8 @@ class ProbesetEvaluator:
                 tmp_summary = pd.read_csv(tmp_summary_file, index_col=0)
                 set_ids_tmp = tmp_summary.index.to_list()
                 columns_subset = []
-                for metric in get_metric_names():
-                    if (metric in self.metrics) and np.any([metric in col for col in tmp_summary.columns]):
+                for metric in self.metrics:
+                    if np.any([metric in col for col in tmp_summary.columns]):
                         columns_subset += [col for col in tmp_summary.columns if metric in col]
                         for set_id in set_ids_tmp:
                             results_found.append([dir, metric, step, set_id])
@@ -895,6 +961,31 @@ class ProbesetEvaluator:
 
         return df_bool
 
+    def _check_batch_key(self, batch_key: Union[str, List[str]]):
+        """Collect existing batch keys in list.
+
+        Args:
+            batch_key:
+                Key in ``adata.obs`` or list of keys
+
+        Returns:
+            Curated list of batch keys.
+
+        """
+        if isinstance(batch_key, str):
+            batch_keys = [batch_key]
+        else:
+            assert isinstance(batch_key, list)
+            batch_keys = batch_key
+        checked_batch_keys = []
+        for bk in batch_keys:
+            if bk in self.adata.obs:
+                checked_batch_keys.append(bk)
+            else:
+                warnings.warn(f"{bk} not considered because it was not found in adata.obs")
+
+        return checked_batch_keys
+
     ############################
     ##    EVALUATION PLOTS    ##
     ############################
@@ -940,7 +1031,7 @@ class ProbesetEvaluator:
             else:
                 raise ValueError("No summaries found.")
         else:
-            if set_ids == "all":
+            if isinstance(set_ids, str) and set_ids == "all":
                 set_ids = self.summary_results.index.tolist()
             table = self.summary_results.loc[set_ids]
             pl.summary_table(table, **plot_kwargs)
@@ -1810,14 +1901,6 @@ def single_forest_classifications(
     #  date)
     # TODO: Add progress bars to trees, and maybe change verbose to verbosity levels
 
-    # if verbose:
-    #     try:
-    #         from tqdm.notebook import tqdm
-    #     except ImportError:
-    #         from tqdm import tqdm_notebook as tqdm
-    # else:
-    #     tqdm = None
-
     n_jobs = _get_n_cores(n_jobs)
 
     if isinstance(selection, (list, np.ndarray, np.generic)):
@@ -2167,16 +2250,6 @@ def forest_classifications(
 
     """
 
-    # TODO write docstring
-
-    # if verbosity > 0:
-    #     try:
-    #         from tqdm.notebook import tqdm
-    #     except ImportError:
-    #         from tqdm import tqdm_notebook as tqdm
-    # else:
-    #     tqdm = None
-
     ct_spec_ref = None
     res = None
     with_clfs = "return_clfs" in forest_kwargs and forest_kwargs["return_clfs"]
@@ -2187,7 +2260,6 @@ def forest_classifications(
         stop_progress = True
     if progress and 2 * verbosity >= level:
         forest_task = progress.add_task(task, total=max_n_forests, level=level)
-    # for _ in tqdm(range(max_n_forests), desc="Train hierarchical trees") if tqdm else range(max_n_forests):
     for _ in range(max_n_forests):
         new_res = single_forest_classifications(
             adata,
