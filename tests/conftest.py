@@ -1,12 +1,10 @@
 """Global fixtures for testing."""
 import random
-
 import numpy as np
 import pandas as pd
 import pytest
 import scanpy as sc
-from spapros import ev
-from spapros import se
+from spapros import ev, se
 from spapros.util import util
 import anndata
 
@@ -189,8 +187,8 @@ def ref_probeset(
         save_dir=None if not save_dir else request.getfixturevalue(save_dir),
         methods=reference_selections,
     )
-
     return reference_probesets
+
 
 ##############
 # evaluation #

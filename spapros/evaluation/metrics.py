@@ -1,10 +1,5 @@
+from typing import Any, Dict, List, Tuple, Union
 import warnings
-from typing import Any
-from typing import Dict
-from typing import List
-from typing import Tuple
-from typing import Union
-
 import numpy as np
 import pandas as pd
 import scanpy as sc
@@ -14,12 +9,14 @@ from scipy.sparse import issparse
 from sklearn.metrics import confusion_matrix
 from sklearn.model_selection import StratifiedKFold
 from sklearn.utils.class_weight import compute_sample_weight
-from spapros.util.util import clean_adata
-from spapros.util.util import cluster_corr
-from spapros.util.util import dict_to_table
-from spapros.util.util import gene_means
-from spapros.util.util import init_progress
 from xgboost import XGBClassifier
+from spapros.util.util import (
+    clean_adata,
+    cluster_corr,
+    dict_to_table,
+    gene_means,
+    init_progress,
+)
 
 
 # note that ever batch aware metric needs a name ending on "_X", which will be later extended to "_X_{batch_key}"
@@ -60,6 +57,7 @@ METRICS_PARAMETERS: Dict[str, Dict] = {
     "gene_corr": {"threshold": 0.8},
 }
 
+
 # utility functions to get general infos about metrics #
 def get_metric_names() -> List[str]:
     """Get a list of all available metric names."""
@@ -76,6 +74,11 @@ def get_metric_default_parameters() -> Dict[str, Dict]:
     """Get the default metric parameters."""
     return METRICS_PARAMETERS
 
+
+def get_metric_base(str: metric) -> str:
+    """Get the conventional metric of a batch-aware metric version."""
+    # note that ever batch aware metric needs a name ending on "_X", which will be later extended to "_X_{batch_key}"
+    return metric.split("_X")[0]
 
 ############################
 # General metric functions #
@@ -110,6 +113,9 @@ def metric_shared_computations(
         verbosity:
             Verbosity level.
     """
+    metric_base = get_metric_base(metric)
+    if metric_base not in get_metric_names():
+        raise ValueError(f"Unsupported metric: {metric}")
 
     progress, started = init_progress(progress, verbosity, level)
 
@@ -226,6 +232,9 @@ def metric_pre_computations(
         verbosity:
             Verbosity level.
     """
+    metric_base = get_metric_base(metric)
+    if metric_base not in get_metric_names():
+        raise ValueError(f"Unsupported metric: {metric}")
 
     progress, started = init_progress(progress, verbosity, level)
 
@@ -340,6 +349,9 @@ def metric_computations(
         verbosity:
             Verbosity level.
     """
+    metric_base = get_metric_base(metric)
+    if metric_base not in get_metric_names():
+        raise ValueError(f"Unsupported metric: {metric}")
 
     progress, started = init_progress(progress, verbosity, level)
 
@@ -429,6 +441,9 @@ def metric_summary(results: pd.DataFrame = None, metric: str = None, parameters:
         parameters:
             Parameters for the calculation of the metric.
     """
+    metric_base = get_metric_base(metric)
+    if metric_base not in get_metric_names():
+        raise ValueError(f"Unsupported metric: {metric}")
 
     summary: Dict[str, Any] = {}
 
@@ -605,7 +620,7 @@ def leiden_clusterings(
 
     # Search missing n's between neighboring found n's
     found_space = True
-    while (not set(ns) <= set([res_n[1] for res_n in tried_res_n])) and (found_space):
+    while (not set(ns) <= {res_n[1] for res_n in tried_res_n}) and (found_space):
         tmp_res_n = tried_res_n
         found_space = False
         for i in range(len(tmp_res_n) - 1):
@@ -870,27 +885,55 @@ def knns(
         for o in obsp:
             del a.obsp[o]
 
-        # Set n_pcs to 50 or number of genes if < 50
-        n_pcs = np.min([50, min(a.shape) - 1])
+        # Set n_pcs to 50 or number of genes if < 50. (Note that the neighbors graph is calculated on hvgs only if present)
+        if "highly_variable" in adata.var:
+            genes_hvg = a[:, a.var["highly_variable"]].var_names
+        else:
+            genes_hvg = genes
 
-        sc.tl.pca(a, n_comps=n_pcs)  # use_highly_variable=False
+        n_pcs = np.min([50, min(min(a.shape), len(genes_hvg)) - 1])
+
+        if n_pcs == 0:
+            print("There is no overlap of genes between the probeset and the reference dataset.")
 
         # Get nearest neighbors for each k
-        for k in ks:
-            if "neighbors" in a.uns:
-                del a.uns["neighbors"]
-            if "connectivities" in a.obsp:
-                del a.obsp["connectivities"]
-            if "distances" in a.obsp:
-                del a.obsp["distances"]
-            sc.pp.neighbors(a, n_neighbors=k)
-            rows, cols = a.obsp["distances"].nonzero()
-            nns = []
-            for r in range(a.n_obs):
-                nns.append(cols[rows == r].tolist())
-            nn_df = pd.DataFrame(nns, index=a.obs.index)
-            nn_df.columns = [f"k{k}_{i}" for i in range(len(nn_df.columns))]
-            df.loc[batch_mask, [f"k{k}_{i}" for i in range(k-1)]] = nn_df
+        if n_pcs > 0:
+            df = pd.DataFrame(index=a.obs_names)
+
+            if progress:
+                task_knn = progress.add_task(description, level=level, total=len(ks))
+
+            sc.tl.pca(a, n_comps=n_pcs)  # use_highly_variable=False
+
+            for k in ks:
+                if "neighbors" in a.uns:
+                    del a.uns["neighbors"]
+                if "connectivities" in a.obsp:
+                    del a.obsp["connectivities"]
+                if "distances" in a.obsp:
+                    del a.obsp["distances"]
+                sc.pp.neighbors(a, n_neighbors=k)
+                rows, cols = a.obsp["distances"].nonzero()
+                nns = []
+                for r in range(a.n_obs):
+                    nns.append(cols[rows == r].tolist())
+                nn_df = pd.DataFrame(nns, index=a.obs.index)
+                nn_df.columns = [f"k{k}_{i}" for i in range(len(nn_df.columns))]
+                df.loc[batch_mask, [f"k{k}_{i}" for i in range(k-1)]] = nn_df
+
+                if progress:
+                    progress.advance(task_knn)
+        else:
+
+            if progress:
+                task_knn = progress.add_task(description, level=level, total=1)
+
+            cols = [f"k{k}_{i}" for k in ks for i in range(k - 1)]
+            df = pd.DataFrame(
+                index=a.obs_names,
+                columns=cols,
+                data=np.zeros((a.n_obs, len(cols)), dtype=int) - 1,
+            )
 
             if progress:
                 progress.advance(task_knn)
@@ -931,6 +974,8 @@ def mean_overlaps(
             Verbosity level.
         description:
             Description for progress bar.
+        set_id:
+            ID of gene set.
 
 
     Returns:
@@ -999,11 +1044,6 @@ def mean_overlaps(
 
     if progress and started:
         progress.stop()
-
-    # for col in df:
-    #     d[col].to_csv(
-    #         f"/lustre/groups/ml01/workspace/lena.strasser/MA/benchmarking/data/outputs2/spapros_evaluation_pbmc1k/"
-    #         # f"knn_overlap_per_ct_n=50_sampled1000X10X_per_k/knn_df_per_ct_X{col}_{set_id}.csv")
 
     return df
 

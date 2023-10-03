@@ -1,3 +1,4 @@
+import random
 import pytest
 from matplotlib.testing.compare import compare_images
 from PIL import Image

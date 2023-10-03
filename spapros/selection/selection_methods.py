@@ -1,22 +1,12 @@
 from datetime import datetime
-from typing import Any
-from typing import Callable
-from typing import Dict
-from typing import Iterable
-from typing import List
-from typing import Literal
-from typing import Optional
-from typing import Tuple
-from typing import Union
-
+from typing import Any, Callable, Dict, Iterable, List, Literal, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
 import scanpy as sc
 import scipy
-from rich.progress import Progress
-from rich.progress import TaskID
+from rich.progress import Progress, TaskID
 from sklearn.decomposition import SparsePCA
-from spapros.evaluation.evaluation import forest_classifications
+from spapros.evaluation.evaluation import forest_classifications, save_forest
 from spapros.util.util import clean_adata
 from statsmodels.stats.multitest import multipletests
 
@@ -921,6 +911,9 @@ def add_tree_genes_from_reference_trees(
         if progress and 2 * verbosity >= (level - 1) and final_forest_task:
             progress.advance(final_forest_task)  # retrain final tree is skipped
 
+        if save:
+            save_forest([initial_summary, initial_ct_spec_summary, im], save)
+
         if return_clfs:
             # raise ValueError("No classifiers were trained since no cell type needs a performance improvement. "\
             #                 "Set return_clfs=False or scip the function call.")
@@ -1546,7 +1539,7 @@ def sort_alphas(alphas: list, n_features: list) -> Tuple[list, list]:
     zipped_lists = zip(alphas, n_features)
     sorted_pairs = sorted(zipped_lists)
     tuples = zip(*sorted_pairs)
-    alphas, n_features = [list(t) for t in tuples]
+    alphas, n_features = (list(t) for t in tuples)
     return alphas, n_features
 
 
