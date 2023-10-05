@@ -248,7 +248,7 @@ class ProbesetEvaluator:
         self,
         adata: sc.AnnData,
         celltype_key: Union[str, List[str]] = "celltype",
-        batch_key: Union[str, List[str]] = "batch",
+        batch_key: Union[str, List[str], None] = None,
         results_dir: Union[str, None] = "./probeset_evaluation/",
         scheme: str = "quick",
         metrics: Optional[List[str]] = None,
@@ -266,12 +266,12 @@ class ProbesetEvaluator:
         self.dir: Union[str, None] = results_dir
         self.scheme = scheme
         self.marker_list = marker_list
-        self.metrics_params = self._prepare_metrics_params(metrics_params)
         if scheme == "custom":
             assert isinstance(metrics, list)
-            self.metrics: List[str] = metrics
+            self.metrics: List[str] = self._stratify_metrics(metrics)
         else:
             self.metrics = self._get_metrics_of_scheme()
+        self.metrics_params = self._prepare_metrics_params(metrics_params)
         self.ref_name = reference_name
         self.ref_dir = reference_dir if (reference_dir is not None) else self._default_reference_dir()
         self.verbosity = verbosity
@@ -643,6 +643,30 @@ class ProbesetEvaluator:
         return new_params
 
 
+    def _stratify_metrics(self, metrics: List[str]) -> List[str]:
+        """Add batch_key to batch-aware metric names.
+        Args:
+            metrics:
+                List of metrics to be stratified.
+        """
+
+        stratified_metrics = []
+        for metric in metrics:
+            if metric.endswith("_X") and self.batch_keys is not None:
+                for batch_key in self.batch_keys:
+                    stratified_metrics.append(metric + f"_{batch_key}")
+            elif "_X_" in metric:
+                new_batch_key = metric.split("_X_")[1]
+                if self.batch_keys is None:
+                    self.batch_key = []
+                if new_batch_key not in self.batch_keys:
+                    self.batch_keys.append(new_batch_key)
+            else:
+                stratified_metrics.append(metric)
+
+        return stratified_metrics
+
+
     def _get_metrics_of_scheme(
         self,
     ) -> List[str]:
@@ -974,6 +998,8 @@ class ProbesetEvaluator:
         """
         if isinstance(batch_key, str):
             batch_keys = [batch_key]
+        elif batch_key is None:
+            return None
         else:
             assert isinstance(batch_key, list)
             batch_keys = batch_key
