@@ -75,7 +75,7 @@ def get_metric_default_parameters() -> Dict[str, Dict]:
     return METRICS_PARAMETERS
 
 
-def get_metric_base(str: metric) -> str:
+def get_metric_base(metric: str) -> str:
     """Get the conventional metric of a batch-aware metric version."""
     # note that ever batch aware metric needs a name ending on "_X", which will be later extended to "_X_{batch_key}"
     return metric.split("_X")[0]
