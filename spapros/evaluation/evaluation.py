@@ -658,7 +658,7 @@ class ProbesetEvaluator:
             elif "_X_" in metric:
                 new_batch_key = metric.split("_X_")[1]
                 if self.batch_keys is None:
-                    self.batch_key = []
+                    self.batch_keys = []
                 if new_batch_key not in self.batch_keys:
                     self.batch_keys.append(new_batch_key)
             else:
