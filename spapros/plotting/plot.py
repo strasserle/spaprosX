@@ -1,6 +1,6 @@
 """Plotting Module."""
 import itertools
-from typing import Callable, Dict, List, Literal, Optional, Tuple, Union
+from typing import Callable, Dict, List, Literal, Optional, Tuple, Union, Sequence, Mapping
 import matplotlib
 import matplotlib.colors as colors
 import matplotlib.pyplot as plt
@@ -11,7 +11,7 @@ import scipy.cluster.hierarchy as sch
 import seaborn as sns
 from matplotlib.gridspec import GridSpec
 from scipy.interpolate import interp1d
-from spapros.plotting._masked_dotplot import MaskedDotPlot
+from spapros.plotting._masked_dotplot import MaskedDotPlot, _VarNames
 from upsetplot import from_indicators
 from upsetplot import UpSet
 from upsetplot import UpSet, from_indicators
