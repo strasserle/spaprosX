@@ -175,6 +175,8 @@ def select_pca_genes(
         else:
             a_batch = a
 
+        n_pcs = np.min([n_pcs, min(a_batch.shape) - 1])
+
         sc.pp.pca(
             a_batch,
             n_comps=n_pcs,

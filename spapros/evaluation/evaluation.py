@@ -661,6 +661,7 @@ class ProbesetEvaluator:
                     self.batch_keys = []
                 if new_batch_key not in self.batch_keys:
                     self.batch_keys.append(new_batch_key)
+                    print(f"{new_batch_key} added to batch_keys")
             else:
                 stratified_metrics.append(metric)
 
