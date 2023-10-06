@@ -535,6 +535,10 @@ class ProbesetSelector:  # (object)
                 self._pca_selection()
             self._save_time_measurement("PCA_selection", t)
 
+            # Prohibit error in (probably old version of) scanpy.rank_genes_groups
+            if "log1p" in self.adata.uns and "base" not in adata.uns["log1p"]:
+                self.adata.uns["log1p"]["base"] = np.e
+
             # DE forests
             t = time.time()
             self._forest_DE_baseline_selection()
