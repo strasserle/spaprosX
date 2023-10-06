@@ -174,12 +174,15 @@ def select_pca_genes(
             a_batch = a[a.obs[batch_key]==batch].copy()
             if "highly_variable" in a_batch.var.columns:
                 del a_batch.var["highly_variable"]
+                a_batch.var["highly_variable"] = sc.pp.highly_variable_genes(a_batch, n_top_genes=8000, flavor='cell_ranger', inplace=False)["highly_variable"].values
             if type(a_batch.obs[batch_key]) == "category":
                 a_batch.obs[batch_key].cat.remove_unused_categories(inplace=True)
         else:
             a_batch = a
 
         n_pcs = np.min([n_pcs, min(a_batch.shape) - 1])
+
+
 
         sc.pp.pca(
             a_batch,
