@@ -628,6 +628,9 @@ class ProbesetEvaluator:
             Dictionary with one key per batch key per metric.
 
         """
+        # Nothing to do if no batch aware evaluation is asked for
+        if self.batch_keys is None:
+            return old_params
         new_params = {}
         for metric in old_params:
             # all batch aware metrics are given a name ending on _X
