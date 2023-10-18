@@ -395,10 +395,18 @@ class ProbesetEvaluator:
                     level=2,
                     verbosity=self.verbosity,
                 )
+                # TODO remove prints after debugging
+                print("self.dir:", self.dir)
+                if self.dir:
+                    print("pre_res_file:", pre_res_file)
+                print("metric:", metric)
+                print("self.pre_results[metric][set_id]", self.pre_results[metric][set_id])
                 if self.dir and (self.pre_results[metric][set_id] is not None):
+                    print("should create dir", os.path.dirname(self._res_file(metric, set_id, pre=True)))
                     Path(os.path.dirname(self._res_file(metric, set_id, pre=True))).mkdir(
                         parents=True, exist_ok=True
                     )
+                    print("should write file", self._res_file(metric, set_id, pre=True))
                     self.pre_results[metric][set_id].to_csv(self._res_file(metric, set_id, pre=True))
             elif os.path.isfile(self._res_file(metric, set_id, pre=True)):
 
