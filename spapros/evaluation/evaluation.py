@@ -671,6 +671,7 @@ class ProbesetEvaluator:
                 for batch_key in self.batch_keys:
                     stratified_metrics.append(metric + f"_{batch_key}")
             elif "_X_" in metric:
+                stratified_metrics.append(metric)
                 new_batch_key = metric.split("_X_")[1]
                 if self.batch_keys is None:
                     self.batch_keys = []
