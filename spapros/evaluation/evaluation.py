@@ -380,11 +380,15 @@ class ProbesetEvaluator:
             )
 
         for metric in self.metrics:
+            print("for metric ", metric)
             if self.dir:
                 pre_res_file: str = self._res_file(metric, set_id, pre=True)
                 pre_res_file_isfile = os.path.isfile(pre_res_file)
             else:
                 pre_res_file_isfile = False
+            print("self.dir: ", self.dir)
+            print("pre_res_file_isfile: ", pre_res_file_isfile)
+            print("res_file: ", self._res_file(metric, set_id, pre=True))
             if (self.dir is None) or (not pre_res_file_isfile):
                 self.pre_results[metric][set_id] = metric_pre_computations(
                     genes,
