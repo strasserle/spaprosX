@@ -630,6 +630,7 @@ class ProbesetEvaluator:
             Dictionary with one key per batch key per metric.
 
         """
+        print("stratify params: ", old_params)
         # Nothing to do if no batch aware evaluation is asked for
         if self.batch_keys is None:
             return old_params
@@ -642,6 +643,7 @@ class ProbesetEvaluator:
                     new_params[metric+"_"+batch_key] = old_params[metric].copy()
                     new_params[metric+"_"+batch_key]["batch_key"] = batch_key
             elif "_X_" in metric:
+                print("found _X_")
                 batch_key = metric.split("_X_")[1]
                 new_params[metric] = old_params[metric]
                 new_params[metric]["batch_key"] = batch_key
@@ -649,6 +651,7 @@ class ProbesetEvaluator:
             else:
                 new_params[metric] = old_params[metric]
 
+        print("stratified params: ", new_params)
         return new_params
 
 
