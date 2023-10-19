@@ -272,6 +272,8 @@ class ProbesetEvaluator:
         else:
             self.metrics = self._get_metrics_of_scheme()
         self.metrics_params = self._prepare_metrics_params(metrics_params)
+        # TODO remove after debugging
+        print("metrics_params: ", self.metrics_params)
         self.ref_name = reference_name
         self.ref_dir = reference_dir if (reference_dir is not None) else self._default_reference_dir()
         self.verbosity = verbosity
@@ -380,15 +382,11 @@ class ProbesetEvaluator:
             )
 
         for metric in self.metrics:
-            print("for metric ", metric)
             if self.dir:
                 pre_res_file: str = self._res_file(metric, set_id, pre=True)
                 pre_res_file_isfile = os.path.isfile(pre_res_file)
             else:
                 pre_res_file_isfile = False
-            print("self.dir: ", self.dir)
-            print("pre_res_file_isfile: ", pre_res_file_isfile)
-            print("res_file: ", self._res_file(metric, set_id, pre=True))
             if (self.dir is None) or (not pre_res_file_isfile):
                 self.pre_results[metric][set_id] = metric_pre_computations(
                     genes,
@@ -399,18 +397,10 @@ class ProbesetEvaluator:
                     level=2,
                     verbosity=self.verbosity,
                 )
-                # TODO remove prints after debugging
-                print("self.dir:", self.dir)
-                if self.dir:
-                    print("pre_res_file:", pre_res_file)
-                print("metric:", metric)
-                print("self.pre_results[metric][set_id]", self.pre_results[metric][set_id])
                 if self.dir and (self.pre_results[metric][set_id] is not None):
-                    print("should create dir", os.path.dirname(self._res_file(metric, set_id, pre=True)))
                     Path(os.path.dirname(self._res_file(metric, set_id, pre=True))).mkdir(
                         parents=True, exist_ok=True
                     )
-                    print("should write file", self._res_file(metric, set_id, pre=True))
                     self.pre_results[metric][set_id].to_csv(self._res_file(metric, set_id, pre=True))
             elif os.path.isfile(self._res_file(metric, set_id, pre=True)):
 
@@ -646,11 +636,15 @@ class ProbesetEvaluator:
         new_params = {}
         for metric in old_params:
             # all batch aware metrics are given a name ending on _X
-            if metric.endswith("_X"):
+            if metric.endswith("_X") and self.batch_keys is not None:
                 # self.batch_keys in adata.obs already checked in init
                 for batch_key in self.batch_keys:
                     new_params[metric+"_"+batch_key] = old_params[metric].copy()
                     new_params[metric+"_"+batch_key]["batch_key"] = batch_key
+            elif "_X_" in metric:
+                batch_key = metric.split("_X_")[1]
+                new_params[metric] = old_params[metric]
+                new_params[metric]["batch_key"] = batch_key
             # non-batch aware metrics are simply copied
             else:
                 new_params[metric] = old_params[metric]
