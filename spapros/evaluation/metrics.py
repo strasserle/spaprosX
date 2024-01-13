@@ -523,7 +523,11 @@ def compute_clustering_and_update(
         found_ns:
             The numbers of clusters resulting from previous clusters with the resolutions saved in :attr:`tried_res_n`.
     """
-    sc.tl.leiden(adata, resolution=resolution, key_added="tmp")
+    try:
+        import rapids_singlecell
+        rapids_singlecell.tl.leiden(adata, resolution=resolution, key_added="tmp")
+    except:
+        sc.tl.leiden(adata, resolution=resolution, key_added="tmp")
     n = len(set(adata.obs["tmp"]))
     if n not in found_ns:
         annotations.loc[n, adata.obs_names] = list(adata.obs["tmp"])
