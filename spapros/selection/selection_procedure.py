@@ -494,9 +494,16 @@ class ProbesetSelector:  # (object)
         self.progress = util.NestedProgress()  # redirect_stdout=False
 
         # batch awareness
-        if batch_key is not None and batch_key in adata.obs:
-            self.batch_key = batch_key
+        if batch_key is not None:
+            if batch_key in adata.obs:
+                print(f"{batch_key} requested as batch key but not found in adata.obs. Falling back to non-batch-aware "
+                      f"selection")
+                self.batch_key = None
+            else:
+                self.batch_key = batch_key
+                print("Batch-aware selection requested. Batch key: ", self.batch_key)
         else:
+            print("Non-batch aware selection requested.")
             self.batch_key = None
 
 
