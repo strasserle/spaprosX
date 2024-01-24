@@ -495,8 +495,8 @@ class ProbesetSelector:  # (object)
 
         # batch awareness
         if batch_key is not None:
-            if batch_key in adata.obs:
-                print(f"{batch_key} requested as batch key but not found in adata.obs. Falling back to non-batch-aware "
+            if batch_key not in adata.obs:
+                print(f"Requested '{batch_key}' as batch key but not found in adata.obs. Falling back to non-batch-aware "
                       f"selection")
                 self.batch_key = None
             else:
