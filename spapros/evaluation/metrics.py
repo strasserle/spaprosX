@@ -26,7 +26,8 @@ METRICS_PARAMETERS: Dict[str, Dict] = {
     "cluster_similarity": {
         "ns": [5, 60],
         "AUC_borders": [[5, 20], [21, 60]],
-        "max_cells": 200000,
+        # "max_cells": 200000,
+        "max_cells": 1000,
         "sample_key": "celltype"
     },
     "knn_overlap": {
