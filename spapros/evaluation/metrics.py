@@ -10,6 +10,8 @@ from sklearn.metrics import confusion_matrix
 from sklearn.model_selection import StratifiedKFold
 from sklearn.utils.class_weight import compute_sample_weight
 from xgboost import XGBClassifier
+
+import util.util
 from spapros.util.util import (
     clean_adata,
     cluster_corr,
@@ -24,6 +26,8 @@ METRICS_PARAMETERS: Dict[str, Dict] = {
     "cluster_similarity": {
         "ns": [5, 60],
         "AUC_borders": [[5, 20], [21, 60]],
+        "max_cells": 200000,
+        "sample_key": "celltype"
     },
     "knn_overlap": {
         "ks": [5, 10, 15, 20, 25, 30],
@@ -123,7 +127,14 @@ def metric_shared_computations(
 
     if metric == "cluster_similarity":
         results = leiden_clusterings(
-            adata, parameters["ns"], progress=progress, level=level, verbosity=verbosity, description=description
+            adata,
+            parameters["ns"],
+            max_cells=parameters["max_cells"],
+            sample_key=parameters["sample_key"],
+            progress=progress,
+            level=level,
+            verbosity=verbosity,
+            description=description
         )
 
     elif metric == "knn_overlap":
@@ -244,6 +255,8 @@ def metric_pre_computations(
         df = leiden_clusterings(
             adata[:, genes],
             parameters["ns"],
+            max_cells=parameters["max_cells"],
+            sample_key=parameters["sample_key"],
             progress=progress,
             level=level,
             verbosity=verbosity,
@@ -542,6 +555,8 @@ def leiden_clusterings(
     adata: sc.AnnData,
     ns: Union[range, List[int]],
     start_res: float = 1.0,
+    max_cells: int = 200000,
+    sample_key: str = "celltype",
     progress: Progress = None,
     level: int = 2,
     verbosity: int = 2,
@@ -559,6 +574,10 @@ def leiden_clusterings(
             The minimum (:attr:`ns[0]`) and maximum (:attr:`ns[1]`) number of clusters.
         start_res:
             Resolution to start computing clusterings.
+        max_cells:
+            If the dataset has > :attr:`max_cells` cells, the clustering is applied on a cell type-balanced random subset.
+        sample_key:
+            Large datasets are sampled according to this obs key.
         progress:
             :attr:`rich.Progress` object if progress bars should be shown.
         level:
@@ -593,8 +612,11 @@ def leiden_clusterings(
         raise ValueError("`ns` must be a list of two integers.")
     ns = range(ns[0], ns[1] + 1)
 
-    # Clean adata and recalculate pca + neighbors graph
+    # Clean adata, sample cells and recalculate pca + neighbors graph
     a = adata.copy()
+    if max_cells is not None and a.n_obs > max_cells:
+        print(f"The dataset is sampled to {max_cells} cells for the cluster similarity metric.")
+        a = util.util.sample_cells(a, n_out=max_cells, obs_key=sample_key, drop_unexpressed_genes=True, copy=True)
     clean_adata(a)
     sc.tl.pca(a)
     sc.pp.neighbors(a)

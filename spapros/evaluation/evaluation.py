@@ -612,6 +612,7 @@ class ProbesetEvaluator:
             params["forest_clfs"]["ct_key"] = self.celltype_key
             params["knn_overlap_weighted"]["weight_key"] = self.celltype_key
             params["knn_overlap_weighted_X"]["weight_key"] = self.celltype_key
+            params["cluster_similarity"]["sample_key"] = self.celltype_key
 
         params = self._stratify_default_parameters(params)
         for metric in params:
