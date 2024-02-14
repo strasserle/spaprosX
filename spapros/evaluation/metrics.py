@@ -11,13 +11,13 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.utils.class_weight import compute_sample_weight
 from xgboost import XGBClassifier
 
-import util.util
 from spapros.util.util import (
     clean_adata,
     cluster_corr,
     dict_to_table,
     gene_means,
     init_progress,
+    sample_cells
 )
 
 
