@@ -617,7 +617,7 @@ def leiden_clusterings(
     a = adata.copy()
     if max_cells is not None and a.n_obs > max_cells:
         print(f"The dataset is sampled to {max_cells} cells for the cluster similarity metric.")
-        a = util.util.sample_cells(a, n_out=max_cells, obs_key=sample_key, drop_unexpressed_genes=True, copy=True)
+        a = sample_cells(a, n_out=max_cells, obs_key=sample_key, drop_unexpressed_genes=True, copy=True)
     clean_adata(a)
     sc.tl.pca(a)
     sc.pp.neighbors(a)
